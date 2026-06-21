@@ -1,0 +1,11 @@
+"""Chronicle — a minimal, readable durable-workflow execution engine.
+
+Workflow state is never stored directly; it is reconstructed by replaying an
+append-only event log. Non-deterministic operations (activities, time, sleeps)
+are intercepted as *commands*, executed once on first run, and fed back from the
+recorded history on replay.
+
+Week 1 scope: event log + deterministic replay engine, in-memory.
+"""
+
+__version__ = "0.1.0"
