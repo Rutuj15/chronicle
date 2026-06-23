@@ -38,3 +38,6 @@ coverage.xml
 
 # Claude Code context
 CLAUDE.md
+
+# Scratch files for testing code snippets, etc.
+scratch
