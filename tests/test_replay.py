@@ -11,10 +11,10 @@ import pytest
 
 from chronicle.context import WorkflowContext
 from chronicle.events import Failed, JsonValue
+from chronicle.history import InMemoryEventLog
 from chronicle.runtime import (
     ActivityFailedError,
     ActivityRegistry,
-    InMemoryEventLog,
     NonDeterminismError,
     run,
 )

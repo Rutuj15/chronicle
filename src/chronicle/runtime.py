@@ -1,4 +1,4 @@
-"""The replay/driver loop, the event-log seam, and the determinism guard.
+"""The replay/driver loop and the determinism guard.
 
 This is the heart of Chronicle (CLAUDE.md §5). One ``.send()`` loop drives a
 workflow coroutine and simultaneously handles three modes:
@@ -12,11 +12,15 @@ workflow coroutine and simultaneously handles three modes:
 
 Same loop, three modes -- which branch is taken depends only on whether the
 cursor ``i`` is still inside the recorded history.
+
+The append-only log this replays over is the ``EventLog`` seam, defined in
+``history.py``; ``run`` is indifferent to whether that log is in memory or on
+disk -- which is what lets Week 2 swap in SQLite without touching this loop.
 """
 
 import time
 from collections.abc import Callable, Coroutine, Mapping
-from typing import Any, Protocol, cast
+from typing import Any, cast
 
 from .context import WorkflowContext
 from .events import (
@@ -28,6 +32,7 @@ from .events import (
     JsonValue,
     NowCommand,
 )
+from .history import EventLog
 
 # An activity is plain side-effectful code: takes JSON args, returns a JSON
 # value. It runs once per execution and is never replayed (CLAUDE.md §2).
@@ -61,41 +66,6 @@ class ActivityFailedError(RuntimeError):
         super().__init__(f"{error_type}: {error_message}")
         self.error_type = error_type
         self.error_message = error_message
-
-
-# --- Event-log seam ----------------------------------------------------------
-
-
-class EventLog(Protocol):
-    """Append-only event history -- the persistence seam.
-
-    The driver loop talks only to this interface, never to a concrete store.
-    Week 1 has one implementation (``InMemoryEventLog``); Week 2 adds a
-    SQLite-backed store behind this same interface, so swapping storage touches
-    one module and leaves the loop untouched (CLAUDE.md §7).
-    """
-
-    def append(self, event: Event) -> None: ...
-
-    def __len__(self) -> int: ...
-
-    def __getitem__(self, index: int) -> Event: ...
-
-
-class InMemoryEventLog(EventLog):
-    """A ``list``-backed event log -- Week 1's only store."""
-
-    def __init__(self) -> None:
-        self._events: list[Event] = []
-
-    def append(self, event: Event) -> None:
-        self._events.append(event)
-
-    def __len__(self) -> int:
-        return len(self._events)
-
-    def __getitem__(self, index: int) -> Event:
-        return self._events[index]
 
 
 # --- Internals ---------------------------------------------------------------
@@ -208,7 +178,7 @@ __all__ = [
     "ActivityFailedError",
     "ActivityRegistry",
     "EventLog",
-    "InMemoryEventLog",
     "NonDeterminismError",
     "run",
 ]
+push t
