@@ -9,7 +9,7 @@ Command out to the runtime's driver loop and resolves to the recorded result
 
 from collections.abc import Generator
 
-from .events import ActivityCommand, Command, JsonValue, NowCommand
+from .events import ActivityCommand, Command, JsonValue, NowCommand, SleepCommand
 
 
 class _CommandAwaitable:
@@ -72,6 +72,23 @@ class WorkflowContext:
         scalar), never a ``datetime``.
         """
         return _CommandAwaitable(NowCommand())
+
+    def sleep(self, duration: float) -> _CommandAwaitable:
+        """Yield intent to suspend the workflow for ``duration`` seconds.
+
+        This is a *durable* sleep, not a busy wait: the runtime records the
+        command with its absolute deadline and the workflow suspends until that
+        deadline passes. A crash mid-sleep is harmless -- the recorded deadline
+        survives, so on resume the workflow waits only the remainder
+        (CLAUDE.md §4, Week 3).
+
+        ``duration`` is the deterministic intent the determinism guard replays;
+        the deadline the runtime derives from it is recorded only, never
+        compared. The awaitable resolves to that scheduled deadline (a
+        Unix-epoch float), so a workflow can observe when its timer was due
+        without re-reading the clock.
+        """
+        return _CommandAwaitable(SleepCommand(duration))
 
 
 __all__ = ["WorkflowContext"]

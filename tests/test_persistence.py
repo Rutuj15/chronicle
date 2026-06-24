@@ -11,7 +11,7 @@ import sqlite3
 from pathlib import Path
 
 from chronicle.context import WorkflowContext
-from chronicle.events import ActivityCommand, Completed
+from chronicle.events import ActivityCommand, Completed, JsonValue
 from chronicle.history import SqliteEventLog
 from chronicle.runtime import ActivityRegistry, run
 
@@ -34,6 +34,11 @@ async def two_step(ctx: WorkflowContext, name: str) -> str:
     greeting = await ctx.activity("greet", name)
     shouted = await ctx.activity("shout", greeting)
     return f"{greeting} >>> {shouted}"
+
+
+async def sleep_once(ctx: WorkflowContext, duration: float) -> JsonValue:
+    """Sleep once; returns the recorded deadline (Week 3 durable timer)."""
+    return await ctx.sleep(duration)
 
 
 # --- SQLite behaves like the in-memory log under the replay loop --------------
@@ -147,3 +152,44 @@ def test_enforces_full_synchronous_for_durable_commits(tmp_path: Path) -> None:
 
     assert level is not None
     assert level[0] == 2  # 0=OFF, 1=NORMAL, 2=FULL, 3=EXTRA
+
+
+# --- a durable timer survives a cold reopen and waits only the remainder ------
+
+
+def test_timer_survives_reopen_and_waits_remainder(tmp_path: Path) -> None:
+    """A durable timer's deadline persists: reopen the file mid-sleep and resume.
+
+    Process 1 records a 10s timer (deadline stamped from now=1000) and exits;
+    process 2 opens the same file cold at now=1005 and waits only the 5s
+    remainder. The deadline lived on disk, not in either process's memory.
+    """
+    path = str(tmp_path / "chronicle.db")
+    conn1 = sqlite3.connect(path)
+    log1 = SqliteEventLog(conn1, "wf")
+    run(
+        sleep_once,
+        (10.0,),
+        log1,
+        {},
+        now=lambda: 1000.0,
+        sleep=lambda d: None,  # record without waiting
+    )
+    conn1.close()  # process 1 "dies" mid-sleep
+
+    # Process 2 opens the same file cold, 5s before the recorded deadline.
+    conn2 = sqlite3.connect(path)
+    log2 = SqliteEventLog(conn2, "wf")
+    waits: list[float] = []
+    result = run(
+        sleep_once,
+        (10.0,),
+        log2,
+        {},
+        now=lambda: 1005.0,
+        sleep=lambda d: waits.append(d),
+    )
+    assert result == 1010.0
+    assert waits == [5.0]  # the persisted deadline, respected after a cold reopen
+    assert len(log2) == 1  # nothing re-recorded on resume
+    conn2.close()

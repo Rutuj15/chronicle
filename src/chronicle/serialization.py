@@ -36,6 +36,8 @@ from .events import (
     Failed,
     JsonValue,
     NowCommand,
+    SleepCommand,
+    TimerFired,
 )
 
 _VERSION = 1
@@ -71,6 +73,13 @@ def _encode_event(event: Event) -> dict[str, JsonValue]:
                 "error_type": error_type,
                 "error_message": error_message,
             }
+        case TimerFired(command=command, deadline=deadline):
+            return {
+                "v": _VERSION,
+                "kind": "timer_fired",
+                "command": _encode_command(command),
+                "deadline": deadline,
+            }
         case _:
             raise AssertionError(f"unknown event type: {type(event).__name__}")
 
@@ -83,6 +92,8 @@ def _encode_command(command: Command) -> dict[str, JsonValue]:
             return {"kind": "activity", "name": name, "args": list(args)}
         case NowCommand():
             return {"kind": "now"}
+        case SleepCommand(duration=duration):
+            return {"kind": "sleep", "duration": duration}
         case _:
             raise AssertionError(f"unknown command type: {type(command).__name__}")
 
@@ -104,6 +115,8 @@ def _decode_event(data: dict[str, Any]) -> Event:
                 error_type=data["error_type"],
                 error_message=data["error_message"],
             )
+        case "timer_fired":
+            return TimerFired(command=command, deadline=data["deadline"])
         case kind:
             raise ValueError(f"unknown event kind: {kind!r}")
 
@@ -116,6 +129,8 @@ def _decode_command(data: dict[str, Any]) -> Command:
             return ActivityCommand(name=data["name"], args=tuple(data["args"]))
         case "now":
             return NowCommand()
+        case "sleep":
+            return SleepCommand(duration=data["duration"])
         case kind:
             raise ValueError(f"unknown command kind: {kind!r}")
 

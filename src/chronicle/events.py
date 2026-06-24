@@ -66,9 +66,28 @@ class NowCommand(Command):
     Even reading the time is non-deterministic (two runs see different clocks),
     so it must be intercepted, recorded, and replayed. This is the smallest
     teaching example of the core rule: no non-deterministic operation happens
-    directly inside workflow code. Real durable sleeps/timers arrive in Week 3
-    as a separate command type.
+    directly inside workflow code.
     """
+
+
+@dataclass(frozen=True)
+class SleepCommand(Command):
+    """Intent: suspend the workflow for a fixed ``duration`` of wall-clock time.
+
+    This is the first command whose resolution is *deferred in real time*: a
+    workflow that issues it must not resume until that much time has actually
+    passed (CLAUDE.md §4, Week 3).
+
+    Only the ``duration`` lives here, never the absolute deadline. The duration
+    is deterministic intent -- two runs of the same workflow ask to sleep the
+    same number of seconds -- so the determinism guard can replay it. The
+    *deadline* (``now() + duration``) depends on when the run started, so it is
+    non-deterministic and is recorded only in the matching :class:`TimerFired`
+    event, never compared. This is the same intent/outcome split as activity
+    args vs. result (CLAUDE.md §5), applied to time.
+    """
+
+    duration: float
 
 
 # --- Events ------------------------------------------------------------------
@@ -110,6 +129,25 @@ class Failed(Event):
     error_message: str
 
 
+@dataclass(frozen=True)
+class TimerFired(Event):
+    """A durable timer fired; ``deadline`` is the absolute instant it was due.
+
+    The runtime stamps ``deadline = now() + duration`` the moment a
+    :class:`SleepCommand` arrives, and records this event *before* it starts
+    waiting. That ordering is the durability boundary for timers: a crash
+    mid-sleep leaves the deadline on disk, so on resume the runtime waits only
+    ``deadline - now()`` -- the remainder, not the whole duration again.
+
+    ``deadline`` is a Unix-epoch float (the same clock :class:`NowCommand`
+    reads) so a workflow can reason about when its timer was scheduled relative
+    to other clock reads. It is also the value fed back to the workflow:
+    ``await ctx.sleep(d)`` resolves to this deadline.
+    """
+
+    deadline: float
+
+
 __all__ = [
     "ActivityCommand",
     "Command",
@@ -119,4 +157,6 @@ __all__ = [
     "JsonScalar",
     "JsonValue",
     "NowCommand",
+    "SleepCommand",
+    "TimerFired",
 ]

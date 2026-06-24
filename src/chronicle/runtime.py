@@ -31,6 +31,8 @@ from .events import (
     Failed,
     JsonValue,
     NowCommand,
+    SleepCommand,
+    TimerFired,
 )
 from .history import EventLog
 
@@ -38,6 +40,16 @@ from .history import EventLog
 # value. It runs once per execution and is never replayed (CLAUDE.md §2).
 Activity = Callable[..., JsonValue]
 ActivityRegistry = Mapping[str, Activity]
+
+# The clock a workflow experiences is injected, never read straight from the OS.
+# That is what makes timers testable without real wall-clock waiting: a test
+# passes a controllable ``now`` and a ``sleep`` that records instead of blocking,
+# and can then assert exact remainder math (CLAUDE.md §11). Defaults are the real
+# OS calls, so production behaviour is unchanged. One clock source -- wall-clock
+# Unix floats, the same one ``NowCommand`` reads -- is used everywhere; swap both
+# defaults to monotonic in one place if clock-jump robustness is ever needed.
+Clock = Callable[[], float]
+Sleeper = Callable[[float], None]
 
 
 # --- Errors ------------------------------------------------------------------
@@ -71,12 +83,24 @@ class ActivityFailedError(RuntimeError):
 # --- Internals ---------------------------------------------------------------
 
 
-def _execute(command: Command, registry: ActivityRegistry) -> Event:
+def _execute(
+    command: Command,
+    registry: ActivityRegistry,
+    *,
+    now: Clock,
+) -> Event:
     """Run a command for real (first run only) and wrap its outcome in an Event.
 
-    All side effects live here: looking up + calling the activity, or reading the
-    wall clock. On success the activity's result is recorded; on failure we
-    record a ``Failed`` event (and the loop re-raises it to abort).
+    All side effects live here: looking up + calling the activity, reading the
+    injected clock, or stamping a timer's deadline. On success the activity's
+    result is recorded; on failure we record a ``Failed`` event (and the loop
+    re-raises it to abort).
+
+    A ``SleepCommand`` is recorded but NOT waited for here -- it only stamps the
+    deadline. The actual wait lives in :func:`_resolve`, which is shared by the
+    first-run and replay branches, because a timer resumed mid-sleep must wait
+    its remainder on the *replay* path that ``_execute`` never sees
+    (CLAUDE.md §4, Week 3).
     """
     match command:
         case ActivityCommand(name, args):
@@ -97,7 +121,12 @@ def _execute(command: Command, registry: ActivityRegistry) -> Event:
         case NowCommand():
             # The clock is read exactly once, on first run; replay feeds back the
             # recorded float. Never a datetime -- JSON-native by contract.
-            return Completed(command=command, result=time.time())
+            return Completed(command=command, result=now())
+        case SleepCommand(duration):
+            # Stamp the absolute deadline from the SAME clock NowCommand uses,
+            # and record it BEFORE any waiting happens (see _resolve). The wait
+            # is deferred so the deadline is already durable when it occurs.
+            return TimerFired(command=command, deadline=now() + duration)
         case _:
             raise AssertionError(f"unknown command type: {type(command).__name__}")
 
@@ -116,18 +145,31 @@ def _assert_matches(command: Command, event: Event) -> None:
         )
 
 
-def _outcome(event: Event) -> JsonValue:
+def _resolve(event: Event, *, now: Clock, sleep: Sleeper) -> JsonValue:
     """Resolve a recorded event into what the workflow should receive.
 
     Success -> the recorded result (fed back into the coroutine). Failure ->
     re-raise, so a recorded crash is reproduced on replay instead of silently
-    turning into a success.
+    turning into a success. Timer -> wait until the recorded deadline if it is
+    still in the future, then return that deadline.
+
+    This is the one place replay can block in real time. A timer resumed
+    mid-sleep has a future deadline, so resolving it waits the remainder; pure
+    replay of an already-completed workflow never blocks, because every recorded
+    deadline is in the past by then. The wait is a side effect only -- the
+    *result* fed back is the same deadline either way, so determinism holds
+    (CLAUDE.md §4, Week 3).
     """
     match event:
         case Completed():
             return event.result
         case Failed():
             raise ActivityFailedError(event.error_type, event.error_message)
+        case TimerFired():
+            remaining = event.deadline - now()
+            if remaining > 0:
+                sleep(remaining)
+            return event.deadline
         case _:
             raise AssertionError(f"unknown event type: {type(event).__name__}")
 
@@ -140,12 +182,20 @@ def run[R](
     args: tuple[JsonValue, ...],
     log: EventLog,
     registry: ActivityRegistry,
+    *,
+    now: Clock = time.time,
+    sleep: Sleeper = time.sleep,
 ) -> R:
     """Drive ``workflow`` to completion over ``log``, deterministically.
 
     Creates a fresh coroutine, feeds it recorded results for every command it has
     seen before, and executes + records anything new. Returns the workflow's
     final value. The same call serves first run, pure replay, and crash-resume.
+
+    ``now`` and ``sleep`` are the clock a workflow experiences. They default to
+    the real OS calls; tests inject fakes so timer behaviour can be asserted
+    without real wall-clock waiting. A durable timer is resolved (possibly
+    waiting its remainder) inside this loop via :func:`_resolve`.
     """
     ctx = WorkflowContext()
     coro = workflow(ctx, *args)
@@ -167,9 +217,9 @@ def run[R](
             event = log[i]  # REPLAY: seen this command before
             _assert_matches(command, event)
         else:
-            event = _execute(command, registry)  # NEW GROUND: execute & record
+            event = _execute(command, registry, now=now)  # NEW GROUND: execute & record
             log.append(event)
-        value_to_send = _outcome(event)
+        value_to_send = _resolve(event, now=now, sleep=sleep)  # may wait on a timer
         i += 1
 
 
@@ -177,8 +227,9 @@ __all__ = [
     "Activity",
     "ActivityFailedError",
     "ActivityRegistry",
+    "Clock",
     "EventLog",
     "NonDeterminismError",
+    "Sleeper",
     "run",
 ]
-push t

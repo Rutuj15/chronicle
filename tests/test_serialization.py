@@ -18,6 +18,8 @@ from chronicle.events import (
     Failed,
     JsonValue,
     NowCommand,
+    SleepCommand,
+    TimerFired,
 )
 from chronicle.history import InMemoryEventLog
 from chronicle.runtime import ActivityRegistry, run
@@ -33,8 +35,15 @@ from chronicle.serialization import dump_event, load_event
         Completed(NowCommand(), 1_700_000_000.5),
         Failed(ActivityCommand("boom", ()), "ValueError", "kaboom"),
         Failed(NowCommand(), "RuntimeError", "clock broke"),
+        TimerFired(SleepCommand(10.0), 1_700_000_010.5),
     ],
-    ids=["completed-activity", "completed-now", "failed-activity", "failed-now"],
+    ids=[
+        "completed-activity",
+        "completed-now",
+        "failed-activity",
+        "failed-now",
+        "timer-fired-sleep",
+    ],
 )
 def test_round_trip_preserves_event(event: Event) -> None:
     loaded = load_event(dump_event(event))
@@ -79,6 +88,19 @@ def test_envelope_shape_is_versioned_and_tagged() -> None:
         "kind": "completed",
         "command": {"kind": "activity", "name": "greet", "args": ["world"]},
         "result": "hi",
+    }
+
+
+def test_timer_fired_envelope_shape() -> None:
+    # The timer event persists the deadline (outcome), not just the duration
+    # (intent) -- so on reopen the remainder can be recomputed. Pin its shape.
+    payload = dump_event(TimerFired(SleepCommand(10.0), 1010.5))
+
+    assert json.loads(payload) == {
+        "v": 1,
+        "kind": "timer_fired",
+        "command": {"kind": "sleep", "duration": 10.0},
+        "deadline": 1010.5,
     }
 
 
