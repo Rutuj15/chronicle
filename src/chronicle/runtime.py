@@ -20,6 +20,7 @@ disk -- which is what lets Week 2 swap in SQLite without touching this loop.
 
 import time
 from collections.abc import Callable, Coroutine, Mapping
+from dataclasses import dataclass, field
 from typing import Any, cast
 
 from .context import WorkflowContext
@@ -35,11 +36,36 @@ from .events import (
     TimerFired,
 )
 from .history import EventLog
+from .retry import RetryPolicy, idempotency_key
 
 # An activity is plain side-effectful code: takes JSON args, returns a JSON
 # value. It runs once per execution and is never replayed (CLAUDE.md §2).
 Activity = Callable[..., JsonValue]
-ActivityRegistry = Mapping[str, Activity]
+
+
+@dataclass(frozen=True)
+class ActivitySpec:
+    """An activity bound to its execution policies.
+
+    Activities are registered by name alongside the policies that govern how the
+    runtime runs them: ``retry`` and ``idempotent`` (both Week 4). When
+    ``idempotent`` is set the runtime injects a stable ``idempotency_key``
+    keyword arg into each call so the activity can dedup across the
+    at-least-once boundary; a per-attempt ``timeout`` knob joins here in Week 5
+    with async activities. A bare callable may be registered in place of a spec
+    -- it is normalized to a spec with the defaults (no retry, not idempotent)
+    in :func:`run` (see :func:`_normalize_registry`).
+    """
+
+    fn: Activity
+    retry: RetryPolicy = field(default_factory=RetryPolicy)
+    idempotent: bool = False
+
+
+# The registry a caller hands to ``run``: activity name -> either a bare
+# callable (default policy) or a full ActivitySpec. Normalized to specs inside
+# ``run`` so the rest of the runtime always sees a spec.
+ActivityRegistry = Mapping[str, Activity | ActivitySpec]
 
 # The clock a workflow experiences is injected, never read straight from the OS.
 # That is what makes timers testable without real wall-clock waiting: a test
@@ -69,9 +95,10 @@ class NonDeterminismError(RuntimeError):
 class ActivityFailedError(RuntimeError):
     """An activity raised during execution (or replay of a recorded failure).
 
-    Week 1 is success-only: we record the failure honestly and abort -- no
-    retry, no timeout (those arrive in Week 4). On replay, a recorded failure is
-    reproduced by re-raising this same error, so a crash stays a crash.
+    The activity was retried up to its policy's ``max_attempts`` and still
+    failed, so the runtime records a ``Failed`` event and aborts by raising
+    this. On replay, a recorded failure is reproduced by re-raising this same
+    error, so a crash stays a crash.
     """
 
     def __init__(self, error_type: str, error_message: str) -> None:
@@ -85,16 +112,20 @@ class ActivityFailedError(RuntimeError):
 
 def _execute(
     command: Command,
-    registry: ActivityRegistry,
+    registry: Mapping[str, ActivitySpec],
     *,
     now: Clock,
+    sleep: Sleeper,
+    workflow_id: str | None,
+    seq: int,
 ) -> Event:
     """Run a command for real (first run only) and wrap its outcome in an Event.
 
-    All side effects live here: looking up + calling the activity, reading the
-    injected clock, or stamping a timer's deadline. On success the activity's
-    result is recorded; on failure we record a ``Failed`` event (and the loop
-    re-raises it to abort).
+    All side effects live here: looking up + running the activity under its
+    retry policy, reading the injected clock, or stamping a timer's deadline.
+    On success the activity's result is recorded; on failure -- after the retry
+    policy is exhausted -- we record a ``Failed`` event (and the loop re-raises
+    it to abort).
 
     A ``SleepCommand`` is recorded but NOT waited for here -- it only stamps the
     deadline. The actual wait lives in :func:`_resolve`, which is shared by the
@@ -104,14 +135,27 @@ def _execute(
     """
     match command:
         case ActivityCommand(name, args):
-            if name not in registry:
-                # A missing activity is a setup bug, not a runtime failure -- it
-                # must not be swallowed into a Failed event.
-                raise KeyError(f"no activity registered as {name!r}")
-            activity = registry[name]
+            spec = _require_activity(registry, name)
+            key: str | None
+            if spec.idempotent:
+                # An idempotent activity needs a key; the key needs the run's
+                # identity. Non-idempotent activities never mint one, so
+                # workflow_id stays optional for them (CLAUDE.md §8, Week 4).
+                if workflow_id is None:
+                    raise ValueError(
+                        f"activity {name!r} is registered idempotent, so run() "
+                        f"needs a workflow_id to mint its idempotency key"
+                    )
+                key = idempotency_key(workflow_id, seq)
+            else:
+                key = None
             try:
-                result = activity(*args)
-            except Exception as exc:  # any activity failure becomes a recorded Failed event
+                # _run_activity retries per the spec's policy and injects the
+                # idempotency key (stable across attempts); on exhaustion it
+                # re-raises so we record a single Failed event for the whole
+                # attempt sequence (CLAUDE.md §4, Week 4).
+                result = _run_activity(spec, args, key=key, sleep=sleep)
+            except Exception as exc:  # any terminal failure becomes a recorded Failed event
                 return Failed(
                     command=command,
                     error_type=type(exc).__name__,
@@ -129,6 +173,73 @@ def _execute(
             return TimerFired(command=command, deadline=now() + duration)
         case _:
             raise AssertionError(f"unknown command type: {type(command).__name__}")
+
+
+def _normalize_registry(registry: ActivityRegistry) -> dict[str, ActivitySpec]:
+    """Accept bare callables OR ActivitySpecs; return specs throughout.
+
+    Existing callers register plain functions (``{"greet": greet}``); Week 4
+    adds ``ActivitySpec`` to attach a retry policy. Normalizing once, here, lets
+    :func:`_execute` assume it always has a spec, so the bare-callable default
+    (no retry) keeps working without touching every call site.
+    """
+    normalized: dict[str, ActivitySpec] = {}
+    for name, entry in registry.items():
+        normalized[name] = entry if isinstance(entry, ActivitySpec) else ActivitySpec(fn=entry)
+    return normalized
+
+
+def _require_activity(registry: Mapping[str, ActivitySpec], name: str) -> ActivitySpec:
+    """Look up an activity by name, or raise.
+
+    A missing activity is a setup bug, not a runtime failure -- it must not be
+    swallowed into a Failed event, so it raises ``KeyError`` before any retry
+    logic runs.
+    """
+    if name not in registry:
+        raise KeyError(f"no activity registered as {name!r}")
+    return registry[name]
+
+
+def _run_activity(
+    spec: ActivitySpec,
+    args: tuple[JsonValue, ...],
+    *,
+    key: str | None,
+    sleep: Sleeper,
+) -> JsonValue:
+    """Call ``spec.fn`` under its retry policy, returning the result.
+
+    Retries on any ``Exception`` up to ``spec.retry.max_attempts`` times,
+    waiting the policy's backoff between attempts via the injected ``sleep``
+    (a plain wait -- NOT a recorded ``SleepCommand`` -- so retries leave no
+    trace in the event log). ``BaseException`` is never caught, so
+    ``KeyboardInterrupt`` / ``SystemExit`` propagate untouched. When every
+    attempt fails, the last exception propagates to :func:`_execute`, which
+    records a single ``Failed`` event for the whole sequence.
+
+    ``key`` is the idempotency key injected as ``idempotency_key=`` when the
+    spec is idempotent (``None`` otherwise). It is built once, before the loop,
+    so every retry of the same invocation presents the *same* key -- a retry
+    re-runs the same activity, not a new one.
+
+    This runs only on first run / new ground: pure replay never calls it, so
+    retries, backoff waits, and key injection never happen on replay
+    (CLAUDE.md §4, W4).
+    """
+    policy = spec.retry
+    # Same key on every attempt: a retry re-runs the SAME invocation, so it must
+    # show the downstream system the SAME key (CLAUDE.md §4, Week 4).
+    kwargs: dict[str, str] = {} if key is None else {"idempotency_key": key}
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            return spec.fn(*args, **kwargs)
+        except Exception:
+            if attempt >= policy.max_attempts:
+                raise
+            sleep(policy.backoff_for(attempt))
 
 
 def _assert_matches(command: Command, event: Event) -> None:
@@ -183,6 +294,7 @@ def run[R](
     log: EventLog,
     registry: ActivityRegistry,
     *,
+    workflow_id: str | None = None,
     now: Clock = time.time,
     sleep: Sleeper = time.sleep,
 ) -> R:
@@ -193,10 +305,21 @@ def run[R](
     final value. The same call serves first run, pure replay, and crash-resume.
 
     ``now`` and ``sleep`` are the clock a workflow experiences. They default to
-    the real OS calls; tests inject fakes so timer behaviour can be asserted
-    without real wall-clock waiting. A durable timer is resolved (possibly
-    waiting its remainder) inside this loop via :func:`_resolve`.
+    the real OS calls; tests inject fakes so timer and retry behaviour can be
+    asserted without real wall-clock waiting. A durable timer is resolved
+    (possibly waiting its remainder) inside this loop via :func:`_resolve`;
+    ``sleep`` is also used directly for retry backoff in :func:`_execute`.
+
+    ``workflow_id`` identifies this execution. It is optional in general but
+    required the moment any registered activity is ``idempotent``: the runtime
+    mints each such activity a stable key ``"{workflow_id}:{seq}"`` (see
+    :func:`~chronicle.retry.idempotency_key`) so it can dedup across the
+    at-least-once boundary. ``seq`` is the command's position in the log -- the
+    same on every run, by deterministic replay.
     """
+    # Bare callables become specs with the default (no-retry) policy, so a plain
+    # {"name": fn} registry keeps working unchanged (CLAUDE.md §8, Week 4).
+    specs = _normalize_registry(registry)
     ctx = WorkflowContext()
     coro = workflow(ctx, *args)
     value_to_send: JsonValue | None = None
@@ -217,7 +340,14 @@ def run[R](
             event = log[i]  # REPLAY: seen this command before
             _assert_matches(command, event)
         else:
-            event = _execute(command, registry, now=now)  # NEW GROUND: execute & record
+            event = _execute(
+                command,
+                specs,
+                now=now,
+                sleep=sleep,
+                workflow_id=workflow_id,
+                seq=i,
+            )  # NEW GROUND: execute & record
             log.append(event)
         value_to_send = _resolve(event, now=now, sleep=sleep)  # may wait on a timer
         i += 1
@@ -227,6 +357,7 @@ __all__ = [
     "Activity",
     "ActivityFailedError",
     "ActivityRegistry",
+    "ActivitySpec",
     "Clock",
     "EventLog",
     "NonDeterminismError",
