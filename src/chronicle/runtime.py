@@ -58,18 +58,36 @@ class ActivitySpec:
     """An activity bound to its execution policies.
 
     Activities are registered by name alongside the policies that govern how the
-    runtime runs them: ``retry`` and ``idempotent`` (both Week 4). When
-    ``idempotent`` is set the runtime injects a stable ``idempotency_key``
-    keyword arg into each call so the activity can dedup across the
-    at-least-once boundary; a per-attempt ``timeout`` knob joins here in Week 5
-    with async activities. A bare callable may be registered in place of a spec
-    -- it is normalized to a spec with the defaults (no retry, not idempotent)
-    in :func:`run` (see :func:`_normalize_registry`).
+    runtime runs them: ``retry`` and ``idempotent`` (both Week 4) plus a
+    per-attempt ``timeout`` (Week 5, slice 2). When ``idempotent`` is set the
+    runtime injects a stable ``idempotency_key`` keyword arg into each call so
+    the activity can dedup across the at-least-once boundary; when ``timeout``
+    is set each execution attempt runs under ``asyncio.wait_for``, which cancels
+    the activity's task past the budget and raises ``TimeoutError`` -- retriable
+    like any failure, and recorded as one ``Failed`` on exhaustion. A bare
+    callable may be registered in place of a spec -- it is normalized to a spec
+    with the defaults (no retry, not idempotent, no timeout) in :func:`run`
+    (see :func:`_normalize_registry`).
+
+    Like a retry policy, a timeout is *execution* machinery, not part of the
+    workflow's deterministic history: it lives on the spec, never in the
+    ``ActivityCommand`` the workflow yields, so the determinism guard, the
+    command schema, and serialization are unchanged, and changing a timeout
+    between workflow versions does not trip the guard (CLAUDE.md §8, Week 5).
     """
 
     fn: Activity
     retry: RetryPolicy = field(default_factory=RetryPolicy)
     idempotent: bool = False
+    timeout: float | None = None
+
+    def __post_init__(self) -> None:
+        # Validate at construction, like RetryPolicy: a malformed spec is a
+        # programmer bug and should fail loudly at registration, not mid-run.
+        # None means "no wall-clock budget" (the default); 0.0 is allowed --
+        # it cancels unless the activity completes synchronously.
+        if self.timeout is not None and self.timeout < 0:
+            raise ValueError("timeout must be >= 0 or None")
 
 
 # The registry a caller hands to ``run``: activity name -> either a bare
@@ -229,7 +247,10 @@ async def _run_activity(
     trace in the event log). ``BaseException`` is never caught, so
     ``KeyboardInterrupt`` / ``SystemExit`` propagate untouched. When every
     attempt fails, the last exception propagates to :func:`_execute`, which
-    records a single ``Failed`` event for the whole sequence.
+    records a single ``Failed`` event for the whole sequence. Each attempt also
+    runs under the spec's per-attempt ``timeout`` when set: a timed-out attempt
+    raises ``TimeoutError``, which is an ordinary ``Exception`` and so is
+    retried like any transient failure (CLAUDE.md §8, Week 5).
 
     ``key`` is the idempotency key injected as ``idempotency_key=`` when the
     spec is idempotent (``None`` otherwise). It is built once, before the loop,
@@ -237,7 +258,7 @@ async def _run_activity(
     re-runs the same activity, not a new one.
 
     This runs only on first run / new ground: pure replay never calls it, so
-    retries, backoff waits, and key injection never happen on replay
+    retries, backoff waits, key injection, and timeouts never happen on replay
     (CLAUDE.md §4, W4).
     """
     policy = spec.retry
@@ -248,7 +269,18 @@ async def _run_activity(
     while True:
         attempt += 1
         try:
-            return await spec.fn(*args, **kwargs)
+            # Per-attempt wall-clock budget (Week 5, slice 2). asyncio.wait_for
+            # cancels the activity's task past `spec.timeout` seconds and raises
+            # TimeoutError -- caught below like any failure, so a timeout is
+            # retried per the policy and (on exhaustion) recorded as one Failed.
+            # timeout=None skips the wrapper entirely (the default: no budget).
+            # NB: a blocking activity that wrapped itself in asyncio.to_thread
+            # can only be *abandoned*, not interrupted -- its thread keeps
+            # running; we surface that caveat rather than hide it (CLAUDE.md §8).
+            awaitable = spec.fn(*args, **kwargs)
+            if spec.timeout is None:
+                return await awaitable
+            return await asyncio.wait_for(awaitable, spec.timeout)
         except Exception:
             if attempt >= policy.max_attempts:
                 raise
