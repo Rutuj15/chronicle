@@ -16,28 +16,8 @@ import pytest
 from chronicle.context import WorkflowContext
 from chronicle.events import JsonValue, SleepCommand, TimerFired
 from chronicle.history import InMemoryEventLog
-from chronicle.runtime import ActivityRegistry, NonDeterminismError, run
-
-
-class _FakeClock:
-    """A controllable stand-in for the OS clock.
-
-    It advances on ``sleep`` and records each wait, but never blocks. This is
-    what lets the tests below assert exact remainder durations -- a real
-    ``time.sleep`` would make them slow, flaky, and impossible to time precisely.
-    """
-
-    def __init__(self, start: float) -> None:
-        self.time = start
-        self.waits: list[float] = []
-
-    def now(self) -> float:
-        return self.time
-
-    def sleep(self, duration: float) -> None:
-        self.time += duration
-        self.waits.append(duration)
-
+from chronicle.runtime import ActivityRegistry, NonDeterminismError
+from conftest import FakeClock, noop_sleep, run_sync
 
 # --- the workflows under test ------------------------------------------------
 
@@ -59,10 +39,10 @@ async def sleep_between_activities(ctx: WorkflowContext) -> JsonValue:
 
 
 def test_first_run_records_timer_and_waits_the_duration() -> None:
-    clock = _FakeClock(1000.0)
+    clock = FakeClock(1000.0)
     log = InMemoryEventLog()
 
-    deadline = run(sleep_once, (10.0,), log, {}, now=clock.now, sleep=clock.sleep)
+    deadline = run_sync(sleep_once, (10.0,), log, {}, now=clock.now, sleep=clock.sleep)
 
     assert deadline == 1010.0  # now() + duration, fed back to the workflow
     assert clock.waits == [10.0]  # waited the full duration on first run
@@ -81,18 +61,18 @@ def test_first_run_records_timer_and_waits_the_duration() -> None:
 def test_replay_of_completed_timer_waits_nothing() -> None:
     # Record once, starting the clock at 1000 -> the deadline becomes 1010.
     recorded = InMemoryEventLog()
-    run(
+    run_sync(
         sleep_once,
         (10.0,),
         recorded,
         {},
-        now=_FakeClock(1000.0).now,
-        sleep=lambda d: None,
+        now=FakeClock(1000.0).now,
+        sleep=noop_sleep,
     )
 
     # Replay well after the deadline: the recorded deadline is now in the past.
-    later = _FakeClock(5000.0)
-    result = run(sleep_once, (10.0,), recorded, {}, now=later.now, sleep=later.sleep)
+    later = FakeClock(5000.0)
+    result = run_sync(sleep_once, (10.0,), recorded, {}, now=later.now, sleep=later.sleep)
 
     assert result == 1010.0  # the recorded deadline, fed back unchanged
     assert later.waits == []  # pure replay of a fired timer never blocks
@@ -106,20 +86,20 @@ def test_resume_after_crash_waits_only_the_remainder() -> None:
     # Process 1 records the timer (deadline 1010) and then "dies" mid-sleep.
     # Only the recorded history crosses the process boundary -- no runtime state.
     recorded = InMemoryEventLog()
-    run(
+    run_sync(
         sleep_once,
         (10.0,),
         recorded,
         {},
-        now=_FakeClock(1000.0).now,
-        sleep=lambda d: None,  # record without actually waiting
+        now=FakeClock(1000.0).now,
+        sleep=noop_sleep,  # record without actually waiting
     )
     assert isinstance(recorded[0], TimerFired)
     assert recorded[0].deadline == 1010.0
 
     # Process 2 restarts at clock=1005 -- 5s short of the recorded deadline.
-    process2 = _FakeClock(1005.0)
-    result = run(sleep_once, (10.0,), recorded, {}, now=process2.now, sleep=process2.sleep)
+    process2 = FakeClock(1005.0)
+    result = run_sync(sleep_once, (10.0,), recorded, {}, now=process2.now, sleep=process2.sleep)
 
     assert result == 1010.0
     assert process2.waits == [5.0]  # the remainder, NOT the full 10s again
@@ -132,24 +112,24 @@ def test_resume_after_crash_waits_only_the_remainder() -> None:
 
 def test_guard_rejects_a_divergent_duration() -> None:
     recorded = InMemoryEventLog()
-    run(
+    run_sync(
         sleep_once,
         (10.0,),
         recorded,
         {},
-        now=_FakeClock(1000.0).now,
-        sleep=lambda d: None,
+        now=FakeClock(1000.0).now,
+        sleep=noop_sleep,
     )
 
     # A different duration issues a different SleepCommand at the same position.
     with pytest.raises(NonDeterminismError):
-        run(
+        run_sync(
             sleep_once,
             (20.0,),
             recorded,
             {},
-            now=_FakeClock(1000.0).now,
-            sleep=lambda d: None,
+            now=FakeClock(1000.0).now,
+            sleep=noop_sleep,
         )
 
 
@@ -159,15 +139,15 @@ def test_guard_rejects_a_divergent_duration() -> None:
 def test_timer_between_activities_suspends_then_resumes() -> None:
     calls: list[str] = []
 
-    def stamp(label: str) -> str:
+    async def stamp(label: str) -> str:
         calls.append(label)
         return label
 
     registry: ActivityRegistry = {"stamp": stamp}
-    clock = _FakeClock(0.0)
+    clock = FakeClock(0.0)
     log = InMemoryEventLog()
 
-    result = run(sleep_between_activities, (), log, registry, now=clock.now, sleep=clock.sleep)
+    result = run_sync(sleep_between_activities, (), log, registry, now=clock.now, sleep=clock.sleep)
 
     assert result == {"before": "before", "deadline": 5.0, "after": "after"}
     assert calls == ["before", "after"]  # both activities ran, in order
@@ -179,10 +159,10 @@ def test_timer_between_activities_suspends_then_resumes() -> None:
 
 
 def test_zero_duration_timer_does_not_wait() -> None:
-    clock = _FakeClock(1000.0)
+    clock = FakeClock(1000.0)
     log = InMemoryEventLog()
 
-    deadline = run(sleep_once, (0.0,), log, {}, now=clock.now, sleep=clock.sleep)
+    deadline = run_sync(sleep_once, (0.0,), log, {}, now=clock.now, sleep=clock.sleep)
 
     assert deadline == 1000.0  # deadline == now()
     assert clock.waits == []  # remaining == 0 -> the guard `> 0` skips the wait

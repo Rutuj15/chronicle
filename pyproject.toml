@@ -29,6 +29,11 @@ target-version = "py312"
 # B = bugbear, SIM = simplify, RUF = ruff-specific rules.
 select = ["E", "W", "F", "I", "UP", "B", "SIM", "RUF"]
 
+[tool.ruff.lint.isort]
+# conftest is a local test module (same dir as the tests); classify it as
+# first-party so its imports group with chronicle, not with third-party pytest.
+known-first-party = ["chronicle", "conftest"]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true

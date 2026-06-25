@@ -17,6 +17,7 @@ The activity re-runs with the SAME key; the downstream ledger, which survived,
 returns the cached result instead of charging again. One charge, two executions.
 """
 
+import asyncio
 import sqlite3
 import subprocess
 import sys
@@ -53,7 +54,7 @@ def _charge(amount: int, *, idempotency_key: str, ledger: str) -> str:
 
 
 def _registry(ledger: str) -> ActivityRegistry:
-    def charge(amount: int, *, idempotency_key: str) -> str:
+    async def charge(amount: int, *, idempotency_key: str) -> str:
         return _charge(amount, idempotency_key=idempotency_key, ledger=ledger)
 
     return {"charge": ActivitySpec(charge, idempotent=True)}
@@ -67,7 +68,7 @@ def record(db_path: str, ledger: str) -> None:
     """Phase 1: run the workflow for real; the activity charges the ledger."""
     conn = sqlite3.connect(db_path)
     log = SqliteEventLog(conn, WORKFLOW_ID)
-    result = run(checkout, (7,), log, _registry(ledger), workflow_id=WORKFLOW_ID)
+    result = asyncio.run(run(checkout, (7,), log, _registry(ledger), workflow_id=WORKFLOW_ID))
     print(f"  result           = {result!r}")
     print(f"  events persisted = {len(log)}")
     conn.close()
@@ -77,7 +78,7 @@ def resume(db_path: str, ledger: str) -> None:
     """Phase 2: the charge event was lost, so it re-runs -- with the same key."""
     conn = sqlite3.connect(db_path)
     log = SqliteEventLog(conn, WORKFLOW_ID)
-    result = run(checkout, (7,), log, _registry(ledger), workflow_id=WORKFLOW_ID)
+    result = asyncio.run(run(checkout, (7,), log, _registry(ledger), workflow_id=WORKFLOW_ID))
     conn.close()
 
     lconn = sqlite3.connect(ledger)

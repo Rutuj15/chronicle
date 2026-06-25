@@ -18,6 +18,7 @@ driven directly::
     uv run python examples/durable_restart.py replay /tmp/chronicle.db
 """
 
+import asyncio
 import sqlite3
 import subprocess
 import sys
@@ -38,11 +39,11 @@ def _registry(executions: dict[str, int]) -> ActivityRegistry:
     that replayed activities are fed back from history, not re-executed.
     """
 
-    def greet(name: str) -> str:
+    async def greet(name: str) -> str:
         executions["greet"] += 1
         return f"hello {name}"
 
-    def shout(text: str) -> str:
+    async def shout(text: str) -> str:
         executions["shout"] += 1
         return text.upper()
 
@@ -61,7 +62,7 @@ def record(db_path: str) -> None:
     executions: dict[str, int] = {"greet": 0, "shout": 0}
     conn = sqlite3.connect(db_path)
     log = SqliteEventLog(conn, WORKFLOW_ID)
-    result = run(two_step, ("world",), log, _registry(executions))
+    result = asyncio.run(run(two_step, ("world",), log, _registry(executions)))
     n_events = len(log)
     conn.close()
 
@@ -75,7 +76,7 @@ def replay(db_path: str) -> None:
     executions: dict[str, int] = {"greet": 0, "shout": 0}
     conn = sqlite3.connect(db_path)
     log = SqliteEventLog(conn, WORKFLOW_ID)
-    result = run(two_step, ("world",), log, _registry(executions))
+    result = asyncio.run(run(two_step, ("world",), log, _registry(executions)))
     n_events = len(log)
     conn.close()
 

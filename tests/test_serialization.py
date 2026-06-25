@@ -22,8 +22,9 @@ from chronicle.events import (
     TimerFired,
 )
 from chronicle.history import InMemoryEventLog
-from chronicle.runtime import ActivityRegistry, run
+from chronicle.runtime import ActivityRegistry
 from chronicle.serialization import dump_event, load_event
+from conftest import run_sync
 
 # --- the union: every variant round-trips ------------------------------------
 
@@ -132,11 +133,11 @@ def test_serialized_log_replays_with_no_activity_re_execution() -> None:
     """
     calls = {"greet": 0, "shout": 0}
 
-    def greet(name: str) -> str:
+    async def greet(name: str) -> str:
         calls["greet"] += 1
         return f"hello {name}"
 
-    def shout(text: str) -> str:
+    async def shout(text: str) -> str:
         calls["shout"] += 1
         return text.upper()
 
@@ -148,7 +149,7 @@ def test_serialized_log_replays_with_no_activity_re_execution() -> None:
         return f"{greeting} >>> {shouted}"
 
     original = InMemoryEventLog()
-    run(two_step, ("world",), original, registry)
+    run_sync(two_step, ("world",), original, registry)
     calls["greet"] = calls["shout"] = 0  # reset: replay must not touch activities
 
     # Simulate the durable store: every event leaves the process as bytes and
@@ -157,7 +158,7 @@ def test_serialized_log_replays_with_no_activity_re_execution() -> None:
     for i in range(len(original)):
         rebuilt.append(load_event(dump_event(original[i])))
 
-    result = run(two_step, ("world",), rebuilt, registry)
+    result = run_sync(two_step, ("world",), rebuilt, registry)
 
     assert result == "hello world >>> HELLO WORLD"
     assert calls == {"greet": 0, "shout": 0}  # nothing re-ran despite the byte detour

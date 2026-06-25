@@ -21,6 +21,7 @@ Each phase can also be driven directly::
     uv run python examples/durable_timer.py resume /tmp/chronicle.db
 """
 
+import asyncio
 import sqlite3
 import subprocess
 import sys
@@ -64,7 +65,9 @@ def start(db_path: str) -> None:
     print(f"  timer duration = {DURATION:.1f}s")
     print("  recording start time + deadline, then sleeping for real...")
     sys.stdout.flush()  # narration must land before the blocking sleep below
-    run(timed, (DURATION,), log, {})  # blocks inside time.sleep until killed
+    # The default sleep is asyncio.sleep, so the worker truly waits the duration
+    # (cooperatively) before the caller kills it mid-sleep.
+    asyncio.run(run(timed, (DURATION,), log, {}))
     conn.close()
 
 
@@ -77,13 +80,13 @@ def resume(db_path: str) -> None:
     """
     reopened_at = time.time()
 
-    def announce_sleep(remaining: float) -> None:
+    async def announce_sleep(remaining: float) -> None:
         print(f"  timer not due yet -- {remaining:.2f}s of the {DURATION:.1f}s left; waiting...")
-        time.sleep(remaining)
+        await asyncio.sleep(remaining)
 
     conn = sqlite3.connect(db_path)
     log = SqliteEventLog(conn, WORKFLOW_ID)
-    result = run(timed, (DURATION,), log, {}, sleep=announce_sleep)
+    result = asyncio.run(run(timed, (DURATION,), log, {}, sleep=announce_sleep))
     conn.close()
 
     out: dict[str, JsonValue] = result

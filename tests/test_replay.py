@@ -12,12 +12,8 @@ import pytest
 from chronicle.context import WorkflowContext
 from chronicle.events import Failed, JsonValue
 from chronicle.history import InMemoryEventLog
-from chronicle.runtime import (
-    ActivityFailedError,
-    ActivityRegistry,
-    NonDeterminismError,
-    run,
-)
+from chronicle.runtime import ActivityFailedError, ActivityRegistry, NonDeterminismError
+from conftest import run_sync
 
 # --- Shared test inputs ------------------------------------------------------
 
@@ -30,11 +26,11 @@ def _counting_registry() -> tuple[ActivityRegistry, dict[str, int]]:
     """
     calls: dict[str, int] = {"greet": 0, "shout": 0}
 
-    def greet(name: str) -> str:
+    async def greet(name: str) -> str:
         calls["greet"] += 1
         return f"hello {name}"
 
-    def shout(text: str) -> str:
+    async def shout(text: str) -> str:
         calls["shout"] += 1
         return text.upper()
 
@@ -70,7 +66,7 @@ def test_first_run_executes_and_records() -> None:
     registry, calls = _counting_registry()
     log = InMemoryEventLog()
 
-    result = run(two_step, ("world",), log, registry)
+    result = run_sync(two_step, ("world",), log, registry)
 
     assert result == "hello world >>> HELLO WORLD"
     assert calls == {"greet": 1, "shout": 1}
@@ -81,10 +77,10 @@ def test_replay_does_not_re_execute() -> None:
     registry, calls = _counting_registry()
     log = InMemoryEventLog()
 
-    first = run(two_step, ("world",), log, registry)
+    first = run_sync(two_step, ("world",), log, registry)
     calls["greet"] = calls["shout"] = 0  # reset: replay must not touch activities
 
-    replayed = run(two_step, ("world",), log, registry)
+    replayed = run_sync(two_step, ("world",), log, registry)
 
     assert replayed == first
     assert calls == {"greet": 0, "shout": 0}  # the headline: nothing re-ran
@@ -94,13 +90,13 @@ def test_replay_does_not_re_execute() -> None:
 def test_resume_replays_prefix_then_executes() -> None:
     registry, calls = _counting_registry()
     full = InMemoryEventLog()
-    run(two_step, ("world",), full, registry)  # record the complete history
+    run_sync(two_step, ("world",), full, registry)  # record the complete history
 
     prefix = InMemoryEventLog()
     prefix.append(full[0])  # simulate a crash after only 'greet' was recorded
     calls["greet"] = calls["shout"] = 0
 
-    resumed = run(two_step, ("world",), prefix, registry)
+    resumed = run_sync(two_step, ("world",), prefix, registry)
 
     assert resumed == "hello world >>> HELLO WORLD"
     assert calls == {"greet": 0, "shout": 1}  # greet replayed, shout executed
@@ -113,22 +109,22 @@ def test_resume_replays_prefix_then_executes() -> None:
 def test_guard_rejects_divergent_command() -> None:
     registry, _ = _counting_registry()
     log = InMemoryEventLog()
-    run(two_step, ("world",), log, registry)  # recorded history
+    run_sync(two_step, ("world",), log, registry)  # recorded history
 
     # Replaying with a different input yields a different first command, so the
     # determinism guard fires instead of feeding back a stale result.
     with pytest.raises(NonDeterminismError):
-        run(two_step, ("earth",), log, registry)
+        run_sync(two_step, ("earth",), log, registry)
 
 
 def test_guard_rejects_workflow_finishing_early() -> None:
     registry, _ = _counting_registry()
     log = InMemoryEventLog()
-    run(two_step, ("world",), log, registry)  # two commands recorded
+    run_sync(two_step, ("world",), log, registry)  # two commands recorded
 
     # A workflow that stops one command short has diverged from its history.
     with pytest.raises(NonDeterminismError):
-        run(one_step, ("world",), log, registry)
+        run_sync(one_step, ("world",), log, registry)
 
 
 # --- Clock and failure handling ----------------------------------------------
@@ -137,15 +133,15 @@ def test_guard_rejects_workflow_finishing_early() -> None:
 def test_now_is_recorded_not_reread() -> None:
     log = InMemoryEventLog()  # no activities needed; ctx.now() is the only command
 
-    first = run(read_clock, (), log, {})
-    replayed = run(read_clock, (), log, {})
+    first = run_sync(read_clock, (), log, {})
+    replayed = run_sync(read_clock, (), log, {})
 
     assert replayed == first  # the recorded instant, not a fresh clock read
     assert isinstance(first, float)  # JSON scalar (Unix float), never a datetime
 
 
 def test_activity_failure_is_recorded_and_reproduced() -> None:
-    def boom() -> JsonValue:
+    async def boom() -> JsonValue:
         raise ValueError("kaboom")
 
     registry = {"boom": boom}
@@ -153,10 +149,10 @@ def test_activity_failure_is_recorded_and_reproduced() -> None:
 
     # First run: the activity raises -> recorded as a Failed event, then aborted.
     with pytest.raises(ActivityFailedError):
-        run(calls_failing, (), log, registry)
+        run_sync(calls_failing, (), log, registry)
     assert len(log) == 1
     assert isinstance(log[0], Failed)
 
     # Replay reproduces the same failure instead of silently succeeding.
     with pytest.raises(ActivityFailedError):
-        run(calls_failing, (), log, registry)
+        run_sync(calls_failing, (), log, registry)

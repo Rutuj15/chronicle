@@ -13,17 +13,18 @@ from pathlib import Path
 from chronicle.context import WorkflowContext
 from chronicle.events import ActivityCommand, Completed, JsonValue
 from chronicle.history import SqliteEventLog
-from chronicle.runtime import ActivityRegistry, run
+from chronicle.runtime import ActivityRegistry
+from conftest import FakeClock, noop_sleep, run_sync
 
 
 def _counting_registry() -> tuple[ActivityRegistry, dict[str, int]]:
     calls: dict[str, int] = {"greet": 0, "shout": 0}
 
-    def greet(name: str) -> str:
+    async def greet(name: str) -> str:
         calls["greet"] += 1
         return f"hello {name}"
 
-    def shout(text: str) -> str:
+    async def shout(text: str) -> str:
         calls["shout"] += 1
         return text.upper()
 
@@ -49,7 +50,7 @@ def test_sqlite_log_records_and_replays(tmp_path: Path) -> None:
     conn = sqlite3.connect(str(tmp_path / "chronicle.db"))
     log = SqliteEventLog(conn, "wf")
 
-    result = run(two_step, ("world",), log, registry)
+    result = run_sync(two_step, ("world",), log, registry)
 
     assert result == "hello world >>> HELLO WORLD"
     assert calls == {"greet": 1, "shout": 1}
@@ -61,7 +62,7 @@ def test_sqlite_log_records_and_replays(tmp_path: Path) -> None:
 
     # Pure replay over the on-disk log: nothing re-runs, nothing new is appended.
     calls["greet"] = calls["shout"] = 0
-    replayed = run(two_step, ("world",), log, registry)
+    replayed = run_sync(two_step, ("world",), log, registry)
 
     assert replayed == result
     assert calls == {"greet": 0, "shout": 0}
@@ -83,7 +84,7 @@ def test_log_survives_connection_reopen(tmp_path: Path) -> None:
 
     conn1 = sqlite3.connect(path)
     log1 = SqliteEventLog(conn1, "wf")
-    run(two_step, ("world",), log1, registry)
+    run_sync(two_step, ("world",), log1, registry)
     conn1.close()  # the process "dies": no in-memory state survives
 
     # A brand-new process opens the same file cold and rebuilds the log.
@@ -91,7 +92,7 @@ def test_log_survives_connection_reopen(tmp_path: Path) -> None:
     conn2 = sqlite3.connect(path)
     log2 = SqliteEventLog(conn2, "wf")
 
-    result = run(two_step, ("world",), log2, registry)
+    result = run_sync(two_step, ("world",), log2, registry)
 
     assert result == "hello world >>> HELLO WORLD"
     assert len(log2) == 2  # the history was read back from disk
@@ -109,7 +110,7 @@ def test_resume_from_partial_persisted_prefix(tmp_path: Path) -> None:
     conn = sqlite3.connect(str(tmp_path / "chronicle.db"))
 
     full = SqliteEventLog(conn, "full")
-    run(two_step, ("world",), full, registry)  # records seq 0 and 1
+    run_sync(two_step, ("world",), full, registry)  # records seq 0 and 1
 
     # Simulate a crash after only seq 0 reached disk: a fresh, empty log holding
     # just the first recorded event.
@@ -117,7 +118,7 @@ def test_resume_from_partial_persisted_prefix(tmp_path: Path) -> None:
     partial.append(full[0])
 
     registry, calls = _counting_registry()
-    resumed = run(two_step, ("world",), partial, registry)
+    resumed = run_sync(two_step, ("world",), partial, registry)
 
     assert resumed == "hello world >>> HELLO WORLD"
     assert calls == {"greet": 0, "shout": 1}  # greet replayed, shout executed
@@ -134,7 +135,7 @@ def test_workflow_ids_are_isolated_in_one_file(tmp_path: Path) -> None:
     log_b = SqliteEventLog(conn, "workflow-b")
 
     registry, _calls = _counting_registry()
-    run(two_step, ("world",), log_a, registry)  # 2 events under workflow-a
+    run_sync(two_step, ("world",), log_a, registry)  # 2 events under workflow-a
 
     assert len(log_a) == 2
     assert len(log_b) == 0  # workflow-b sees none of workflow-a's history
@@ -167,29 +168,29 @@ def test_timer_survives_reopen_and_waits_remainder(tmp_path: Path) -> None:
     path = str(tmp_path / "chronicle.db")
     conn1 = sqlite3.connect(path)
     log1 = SqliteEventLog(conn1, "wf")
-    run(
+    run_sync(
         sleep_once,
         (10.0,),
         log1,
         {},
         now=lambda: 1000.0,
-        sleep=lambda d: None,  # record without waiting
+        sleep=noop_sleep,  # record without waiting
     )
     conn1.close()  # process 1 "dies" mid-sleep
 
     # Process 2 opens the same file cold, 5s before the recorded deadline.
     conn2 = sqlite3.connect(path)
     log2 = SqliteEventLog(conn2, "wf")
-    waits: list[float] = []
-    result = run(
+    clock = FakeClock()
+    result = run_sync(
         sleep_once,
         (10.0,),
         log2,
         {},
         now=lambda: 1005.0,
-        sleep=lambda d: waits.append(d),
+        sleep=clock.sleep,
     )
     assert result == 1010.0
-    assert waits == [5.0]  # the persisted deadline, respected after a cold reopen
+    assert clock.waits == [5.0]  # the persisted deadline, respected after a cold reopen
     assert len(log2) == 1  # nothing re-recorded on resume
     conn2.close()

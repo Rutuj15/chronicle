@@ -18,8 +18,9 @@ The append-only log this replays over is the ``EventLog`` seam, defined in
 disk -- which is what lets Week 2 swap in SQLite without touching this loop.
 """
 
+import asyncio
 import time
-from collections.abc import Callable, Coroutine, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -39,8 +40,17 @@ from .history import EventLog
 from .retry import RetryPolicy, idempotency_key
 
 # An activity is plain side-effectful code: takes JSON args, returns a JSON
-# value. It runs once per execution and is never replayed (CLAUDE.md §2).
-Activity = Callable[..., JsonValue]
+# value. It is an ``async def`` so the runtime can ``await`` it -- which is what
+# makes a waiting activity cooperative (it parks the workflow without blocking
+# the engine) and is the prerequisite for ``asyncio.wait_for`` timeouts (Week 5,
+# slice 2). It runs once per execution and is never replayed (CLAUDE.md §2).
+#
+# Blocking work is NOT auto-wrapped: an activity that must call a synchronous,
+# blocking function wraps it itself with ``await asyncio.to_thread(fn, ...)``.
+# That explicitness is deliberate -- it is exactly where the "a timeout can only
+# abandon the thread, not interrupt it" caveat lives, and we surface it rather
+# than hide it behind a silent coercion (CLAUDE.md §8, Week 4).
+Activity = Callable[..., Awaitable[JsonValue]]
 
 
 @dataclass(frozen=True)
@@ -69,13 +79,16 @@ ActivityRegistry = Mapping[str, Activity | ActivitySpec]
 
 # The clock a workflow experiences is injected, never read straight from the OS.
 # That is what makes timers testable without real wall-clock waiting: a test
-# passes a controllable ``now`` and a ``sleep`` that records instead of blocking,
-# and can then assert exact remainder math (CLAUDE.md §11). Defaults are the real
-# OS calls, so production behaviour is unchanged. One clock source -- wall-clock
-# Unix floats, the same one ``NowCommand`` reads -- is used everywhere; swap both
-# defaults to monotonic in one place if clock-jump robustness is ever needed.
+# passes a controllable ``now`` and an async ``sleep`` that records instead of
+# blocking, and can then assert exact remainder math (CLAUDE.md §11). Defaults are
+# the real OS clock and ``asyncio.sleep`` -- so production behaviour waits
+# *cooperatively* (a parked workflow no longer blocks the engine thread), the
+# payoff of the async engine. ``now`` stays synchronous: reading the clock is
+# instant and never suspends. One clock source -- wall-clock Unix floats, the same
+# one ``NowCommand`` reads -- is used everywhere; swap both defaults to monotonic
+# in one place if clock-jump robustness is ever needed.
 Clock = Callable[[], float]
-Sleeper = Callable[[float], None]
+AsyncSleeper = Callable[[float], Awaitable[None]]
 
 
 # --- Errors ------------------------------------------------------------------
@@ -110,12 +123,12 @@ class ActivityFailedError(RuntimeError):
 # --- Internals ---------------------------------------------------------------
 
 
-def _execute(
+async def _execute(
     command: Command,
     registry: Mapping[str, ActivitySpec],
     *,
     now: Clock,
-    sleep: Sleeper,
+    sleep: AsyncSleeper,
     workflow_id: str | None,
     seq: int,
 ) -> Event:
@@ -154,7 +167,7 @@ def _execute(
                 # idempotency key (stable across attempts); on exhaustion it
                 # re-raises so we record a single Failed event for the whole
                 # attempt sequence (CLAUDE.md §4, Week 4).
-                result = _run_activity(spec, args, key=key, sleep=sleep)
+                result = await _run_activity(spec, args, key=key, sleep=sleep)
             except Exception as exc:  # any terminal failure becomes a recorded Failed event
                 return Failed(
                     command=command,
@@ -201,12 +214,12 @@ def _require_activity(registry: Mapping[str, ActivitySpec], name: str) -> Activi
     return registry[name]
 
 
-def _run_activity(
+async def _run_activity(
     spec: ActivitySpec,
     args: tuple[JsonValue, ...],
     *,
     key: str | None,
-    sleep: Sleeper,
+    sleep: AsyncSleeper,
 ) -> JsonValue:
     """Call ``spec.fn`` under its retry policy, returning the result.
 
@@ -235,11 +248,11 @@ def _run_activity(
     while True:
         attempt += 1
         try:
-            return spec.fn(*args, **kwargs)
+            return await spec.fn(*args, **kwargs)
         except Exception:
             if attempt >= policy.max_attempts:
                 raise
-            sleep(policy.backoff_for(attempt))
+            await sleep(policy.backoff_for(attempt))
 
 
 def _assert_matches(command: Command, event: Event) -> None:
@@ -256,7 +269,7 @@ def _assert_matches(command: Command, event: Event) -> None:
         )
 
 
-def _resolve(event: Event, *, now: Clock, sleep: Sleeper) -> JsonValue:
+async def _resolve(event: Event, *, now: Clock, sleep: AsyncSleeper) -> JsonValue:
     """Resolve a recorded event into what the workflow should receive.
 
     Success -> the recorded result (fed back into the coroutine). Failure ->
@@ -279,7 +292,7 @@ def _resolve(event: Event, *, now: Clock, sleep: Sleeper) -> JsonValue:
         case TimerFired():
             remaining = event.deadline - now()
             if remaining > 0:
-                sleep(remaining)
+                await sleep(remaining)
             return event.deadline
         case _:
             raise AssertionError(f"unknown event type: {type(event).__name__}")
@@ -288,7 +301,7 @@ def _resolve(event: Event, *, now: Clock, sleep: Sleeper) -> JsonValue:
 # --- Public API --------------------------------------------------------------
 
 
-def run[R](
+async def run[R](
     workflow: Callable[..., Coroutine[Any, Any, R]],
     args: tuple[JsonValue, ...],
     log: EventLog,
@@ -296,19 +309,31 @@ def run[R](
     *,
     workflow_id: str | None = None,
     now: Clock = time.time,
-    sleep: Sleeper = time.sleep,
+    sleep: AsyncSleeper = asyncio.sleep,
 ) -> R:
     """Drive ``workflow`` to completion over ``log``, deterministically.
 
-    Creates a fresh coroutine, feeds it recorded results for every command it has
-    seen before, and executes + records anything new. Returns the workflow's
-    final value. The same call serves first run, pure replay, and crash-resume.
+    This is a *coroutine*: ``await`` it (or wrap a sync call site in
+    ``asyncio.run(run(...))``). It creates a fresh workflow coroutine, feeds it
+    recorded results for every command it has seen before, and executes + records
+    anything new. Returns the workflow's final value. The same call serves first
+    run, pure replay, and crash-resume.
 
-    ``now`` and ``sleep`` are the clock a workflow experiences. They default to
-    the real OS calls; tests inject fakes so timer and retry behaviour can be
-    asserted without real wall-clock waiting. A durable timer is resolved
-    (possibly waiting its remainder) inside this loop via :func:`_resolve`;
-    ``sleep`` is also used directly for retry backoff in :func:`_execute`.
+    The workflow coroutine itself is still driven by manual ``.send()`` -- that
+    does not change. What is async is the *driver*: at each command it ``await``s
+    the side-effect's resolution, so a waiting activity or timer *cooperatively*
+    parks this run (yielding to the event loop and other workflows) instead of
+    blocking the thread. The ``__await__`` bridge in ``context.py`` is
+    loop-agnostic, so workflow code is entirely unchanged.
+
+    ``now`` and ``sleep`` are the clock a workflow experiences. ``now`` defaults
+    to the real OS clock (synchronous -- reading the clock never suspends);
+    ``sleep`` defaults to ``asyncio.sleep`` (cooperative). Tests inject fakes --
+    ``now`` a controllable float, ``sleep`` an async function that records
+    instead of blocking -- so timer and retry behaviour can be asserted without
+    real wall-clock waiting. A durable timer is resolved (possibly waiting its
+    remainder) inside this loop via :func:`_resolve`; ``sleep`` is also used
+    directly for retry backoff in :func:`_execute`.
 
     ``workflow_id`` identifies this execution. It is optional in general but
     required the moment any registered activity is ``idempotent``: the runtime
@@ -340,7 +365,7 @@ def run[R](
             event = log[i]  # REPLAY: seen this command before
             _assert_matches(command, event)
         else:
-            event = _execute(
+            event = await _execute(
                 command,
                 specs,
                 now=now,
@@ -349,7 +374,7 @@ def run[R](
                 seq=i,
             )  # NEW GROUND: execute & record
             log.append(event)
-        value_to_send = _resolve(event, now=now, sleep=sleep)  # may wait on a timer
+        value_to_send = await _resolve(event, now=now, sleep=sleep)  # may wait on a timer
         i += 1
 
 
@@ -358,9 +383,9 @@ __all__ = [
     "ActivityFailedError",
     "ActivityRegistry",
     "ActivitySpec",
+    "AsyncSleeper",
     "Clock",
     "EventLog",
     "NonDeterminismError",
-    "Sleeper",
     "run",
 ]

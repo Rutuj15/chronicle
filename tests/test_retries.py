@@ -14,11 +14,8 @@ from chronicle.context import WorkflowContext
 from chronicle.events import Completed, Failed, JsonValue
 from chronicle.history import InMemoryEventLog
 from chronicle.retry import RetryPolicy
-from chronicle.runtime import ActivityFailedError, ActivitySpec, run
-
-
-def _noop_sleep(_: float) -> None:
-    """A sleep that does nothing -- lets retry tests run with no real waiting."""
+from chronicle.runtime import ActivityFailedError, ActivitySpec
+from conftest import FakeClock, noop_sleep, run_sync
 
 
 async def call_activity(ctx: WorkflowContext, name: str) -> JsonValue:
@@ -36,7 +33,7 @@ def _flaky_registry(
     """
     calls: dict[str, int] = {"flaky": 0}
 
-    def flaky() -> str:
+    async def flaky() -> str:
         calls["flaky"] += 1
         if calls["flaky"] <= fail_first:
             raise RuntimeError(f"transient #{calls['flaky']}")
@@ -75,7 +72,7 @@ def test_retry_succeeds_on_later_attempt() -> None:
     registry, calls = _flaky_registry(fail_first=2, retry=policy)  # fails twice, wins 3rd
     log = InMemoryEventLog()
 
-    result = run(call_activity, ("flaky",), log, registry, sleep=_noop_sleep)
+    result = run_sync(call_activity, ("flaky",), log, registry, sleep=noop_sleep)
 
     assert result == "recovered"
     assert calls["flaky"] == 3  # failed twice, succeeded on the third and final attempt
@@ -86,7 +83,7 @@ def test_retry_succeeds_on_later_attempt() -> None:
 def test_retry_exhaustion_records_failed_and_raises() -> None:
     calls: dict[str, int] = {"boom": 0}
 
-    def boom() -> JsonValue:
+    async def boom() -> JsonValue:
         calls["boom"] += 1
         raise RuntimeError("nope")
 
@@ -94,7 +91,7 @@ def test_retry_exhaustion_records_failed_and_raises() -> None:
     log = InMemoryEventLog()
 
     with pytest.raises(ActivityFailedError):
-        run(call_activity, ("boom",), log, registry, sleep=_noop_sleep)
+        run_sync(call_activity, ("boom",), log, registry, sleep=noop_sleep)
 
     assert calls["boom"] == 3  # tried up to max_attempts, then gave up
     assert len(log) == 1
@@ -105,10 +102,10 @@ def test_replay_does_not_re_execute_or_retry() -> None:
     policy = RetryPolicy(max_attempts=3, initial_backoff=1.0, backoff_factor=2.0)
     registry, calls = _flaky_registry(fail_first=2, retry=policy)
     log = InMemoryEventLog()
-    run(call_activity, ("flaky",), log, registry, sleep=_noop_sleep)  # records Completed
+    run_sync(call_activity, ("flaky",), log, registry, sleep=noop_sleep)  # records Completed
     calls["flaky"] = 0  # reset: replay must not touch the activity at all
 
-    result = run(call_activity, ("flaky",), log, registry, sleep=_noop_sleep)
+    result = run_sync(call_activity, ("flaky",), log, registry, sleep=noop_sleep)
 
     assert result == "recovered"
     assert calls["flaky"] == 0  # pure replay executes zero activities -> zero retries
@@ -118,26 +115,23 @@ def test_replay_does_not_re_execute_or_retry() -> None:
 def test_backoff_waits_use_the_injected_sleep() -> None:
     policy = RetryPolicy(max_attempts=3, initial_backoff=1.0, backoff_factor=2.0)
     registry, _calls = _flaky_registry(fail_first=2, retry=policy)
-    waits: list[float] = []
+    clock = FakeClock()
 
-    def record_sleep(duration: float) -> None:
-        waits.append(duration)
-
-    run(call_activity, ("flaky",), InMemoryEventLog(), registry, sleep=record_sleep)
+    run_sync(call_activity, ("flaky",), InMemoryEventLog(), registry, sleep=clock.sleep)
 
     # After attempt 1 fails -> backoff_for(1); after attempt 2 -> backoff_for(2).
-    assert waits == [policy.backoff_for(1), policy.backoff_for(2)]
-    assert waits == [1.0, 2.0]
+    assert clock.waits == [policy.backoff_for(1), policy.backoff_for(2)]
+    assert clock.waits == [1.0, 2.0]
 
 
 def test_bare_callable_has_no_retry_by_default() -> None:
     calls: dict[str, int] = {"once": 0}
 
-    def once() -> JsonValue:
+    async def once() -> JsonValue:
         calls["once"] += 1
         raise RuntimeError("fail")
 
     log = InMemoryEventLog()
     with pytest.raises(ActivityFailedError):
-        run(call_activity, ("once",), log, {"once": once}, sleep=_noop_sleep)
+        run_sync(call_activity, ("once",), log, {"once": once}, sleep=noop_sleep)
     assert calls["once"] == 1  # default policy: a single attempt, no retry

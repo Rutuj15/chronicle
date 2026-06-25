@@ -13,11 +13,8 @@ from chronicle.context import WorkflowContext
 from chronicle.events import JsonValue
 from chronicle.history import InMemoryEventLog
 from chronicle.retry import RetryPolicy, idempotency_key
-from chronicle.runtime import ActivitySpec, run
-
-
-def _noop_sleep(_: float) -> None:
-    """A sleep that does nothing -- lets tests run with no real waiting."""
+from chronicle.runtime import ActivitySpec
+from conftest import noop_sleep, run_sync
 
 
 async def call_activity(ctx: WorkflowContext, name: str, *args: JsonValue) -> JsonValue:
@@ -40,19 +37,19 @@ def test_key_combines_workflow_id_and_position() -> None:
 def test_idempotent_activity_receives_a_key() -> None:
     seen: list[str] = []
 
-    def charge(amount: int, *, idempotency_key: str) -> str:
+    async def charge(amount: int, *, idempotency_key: str) -> str:
         seen.append(idempotency_key)
         return f"charged-{amount}"
 
     registry = {"charge": ActivitySpec(charge, idempotent=True)}
 
-    result = run(
+    result = run_sync(
         call_activity,
         ("charge", 5),
         InMemoryEventLog(),
         registry,
         workflow_id="order-1",
-        sleep=_noop_sleep,
+        sleep=noop_sleep,
     )
 
     assert result == "charged-5"
@@ -62,17 +59,17 @@ def test_idempotent_activity_receives_a_key() -> None:
 def test_non_idempotent_activity_gets_no_key() -> None:
     # A plain activity whose signature does NOT accept idempotency_key must still
     # work unchanged -- the runtime injects nothing when the spec isn't idempotent.
-    def greet(name: str) -> str:
+    async def greet(name: str) -> str:
         return f"hello {name}"
 
     registry = {"greet": greet}  # bare callable -> default spec, not idempotent
 
-    result = run(
+    result = run_sync(
         call_activity,
         ("greet", "world"),
         InMemoryEventLog(),
         registry,
-        sleep=_noop_sleep,
+        sleep=noop_sleep,
     )
 
     assert result == "hello world"
@@ -82,7 +79,7 @@ def test_key_is_stable_across_retries() -> None:
     seen: list[str] = []
     attempts = 0
 
-    def flaky(*, idempotency_key: str) -> str:
+    async def flaky(*, idempotency_key: str) -> str:
         nonlocal attempts
         seen.append(idempotency_key)
         attempts += 1
@@ -94,13 +91,13 @@ def test_key_is_stable_across_retries() -> None:
         "flaky": ActivitySpec(flaky, retry=RetryPolicy(max_attempts=3), idempotent=True),
     }
 
-    result = run(
+    result = run_sync(
         call_activity,
         ("flaky",),
         InMemoryEventLog(),
         registry,
         workflow_id="wf",
-        sleep=_noop_sleep,
+        sleep=noop_sleep,
     )
 
     assert result == "recovered"
@@ -114,12 +111,14 @@ def test_each_invocation_gets_a_distinct_positional_key() -> None:
         b = await ctx.activity("record")  # position 1
         return [a, b]
 
-    def record(*, idempotency_key: str) -> str:
+    async def record(*, idempotency_key: str) -> str:
         return idempotency_key
 
     registry = {"record": ActivitySpec(record, idempotent=True)}
 
-    result = run(two_calls, (), InMemoryEventLog(), registry, workflow_id="wf", sleep=_noop_sleep)
+    result = run_sync(
+        two_calls, (), InMemoryEventLog(), registry, workflow_id="wf", sleep=noop_sleep
+    )
 
     assert result == ["wf:0", "wf:1"]  # distinct positions -> distinct keys
 
@@ -134,7 +133,7 @@ def test_re_execution_after_a_lost_commit_dedups_via_key() -> None:
     charges: dict[str, str] = {}  # stands in for the downstream payment system
     charge_calls = 0
 
-    def charge(amount: int, *, idempotency_key: str) -> str:
+    async def charge(amount: int, *, idempotency_key: str) -> str:
         nonlocal charge_calls
         if idempotency_key in charges:  # downstream already saw this key -> no-op
             return charges[idempotency_key]
@@ -146,13 +145,13 @@ def test_re_execution_after_a_lost_commit_dedups_via_key() -> None:
     registry = {"charge": ActivitySpec(charge, idempotent=True)}
 
     # First execution: activity runs, side effect happens, outcome "committed".
-    run(
+    run_sync(
         call_activity,
         ("charge", 5),
         InMemoryEventLog(),
         registry,
         workflow_id="order-1",
-        sleep=_noop_sleep,
+        sleep=noop_sleep,
     )
     assert charge_calls == 1
 
@@ -161,13 +160,13 @@ def test_re_execution_after_a_lost_commit_dedups_via_key() -> None:
     # durability domain from the engine's own log. Replay finds nothing, crosses
     # into new ground, and re-executes charge with the SAME key (same workflow_id
     # + same position 0).
-    result = run(
+    result = run_sync(
         call_activity,
         ("charge", 5),
         InMemoryEventLog(),
         registry,
         workflow_id="order-1",
-        sleep=_noop_sleep,
+        sleep=noop_sleep,
     )
 
     assert result == "charged-5"
@@ -178,10 +177,10 @@ def test_re_execution_after_a_lost_commit_dedups_via_key() -> None:
 
 
 def test_idempotent_activity_without_workflow_id_raises() -> None:
-    def charge(*, idempotency_key: str) -> str:
+    async def charge(*, idempotency_key: str) -> str:
         return "charged"
 
     registry = {"charge": ActivitySpec(charge, idempotent=True)}
 
     with pytest.raises(ValueError):
-        run(call_activity, ("charge",), InMemoryEventLog(), registry, sleep=_noop_sleep)
+        run_sync(call_activity, ("charge",), InMemoryEventLog(), registry, sleep=noop_sleep)
