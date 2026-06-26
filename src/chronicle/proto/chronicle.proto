@@ -1,0 +1,119 @@
+// Chronicle gRPC protocol.
+//
+// The wire contract between the three processes Chronicle splits into:
+//
+//   CLIENT  --StartWorkflow / GetWorkflowResult-->  ENGINE
+//   WORKER  <--PollActivityTask / ReportActivityResult-->  ENGINE
+//
+// The ENGINE owns workflow replay, the event log, the task queue, and the live
+// workflow coroutines. WORKERS own only the activity code: they poll for a unit
+// of activity work, run it, and report the outcome back. That split is the whole
+// point: the same `run()` loop, handed a remote executor,
+// dispatches each activity to a worker instead of running it in-process.
+//
+// Payloads (args, results) are JSON-encoded strings, never google.protobuf.Struct:
+// this keeps the original contract (and tuple fidelity) intact and leaves the
+// engine free of any schema knowledge about activity arguments.
+syntax = "proto3";
+
+package chronicle;
+
+// ---------------------------------------------------------------------------
+// Client -> Engine
+// ---------------------------------------------------------------------------
+
+// Start a workflow and return immediately; the workflow runs in the engine as a
+// live coroutine. The client later calls GetWorkflowResult to observe the
+// outcome. workflow_id is client-supplied and unique; workflow_name selects a
+// workflow function the engine has registered (mirroring how activities are
+// named by string); args_json is the JSON-encoded input tuple.
+message StartWorkflowRequest {
+  string workflow_id = 1;
+  string workflow_name = 2;
+  string args_json = 3;
+}
+
+message StartWorkflowResponse {}
+
+// Observe a workflow's outcome. Blocks server-side until the workflow finishes
+// (the engine awaits its live coroutine), then reports success or failure; if
+// the call returns early the workflow is still RUNNING. result_json holds the
+// JSON-encoded return value on COMPLETED; the failure fields describe the
+// terminal error on FAILED.
+message GetWorkflowResultRequest {
+  string workflow_id = 1;
+}
+
+message GetWorkflowResultResponse {
+  enum Status {
+    RUNNING = 0;
+    COMPLETED = 1;
+    FAILED = 2;
+  }
+  Status status = 1;
+  string result_json = 2;
+  string error_type = 3;
+  string error_message = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Worker -> Engine
+// ---------------------------------------------------------------------------
+
+// Ask the engine for the next activity to run. Long-poll: the engine blocks this
+// call until a task is available or the long-poll times out, then returns an
+// empty response for the worker to re-poll. task_queue selects a queue ("": the
+// default queue); named queues are a forward-looking nicety, not yet used.
+message PollActivityTaskRequest {
+  string task_queue = 1;
+}
+
+// One unit of activity work handed to a worker: run the named activity once,
+// then ReportActivityResult. task_id is engine-generated and keys the engine's
+// parked asyncio.Future -- the worker echoes it back so the result lands in the
+// right workflow. idempotency_key is engine-minted as "{workflow_id}:{seq}" and
+// is ALWAYS sent; the worker injects it as idempotency_key= only if its local
+// ActivitySpec is idempotent, so the engine never needs to know which are.
+message ActivityTask {
+  string task_id = 1;
+  string workflow_id = 2;
+  string activity_name = 3;
+  string args_json = 4;
+  string idempotency_key = 5;
+}
+
+message PollActivityTaskResponse {
+  // Unset when the long-poll timed out with nothing to do; the worker re-polls.
+  optional ActivityTask task = 1;
+}
+
+// Report a task's terminal outcome. The worker has already applied its retry /
+// timeout policy (via the shared _run_activity loop), so this is exactly one
+// result OR one failure -- never a stream of attempts. On failure the engine
+// raises the marker that becomes a single Failed event, exactly as an in-process
+// failure would.
+message ReportActivityResultRequest {
+  string task_id = 1;
+  oneof outcome {
+    string result_json = 2;
+    ActivityFailure failure = 3;
+  }
+}
+
+message ActivityFailure {
+  string error_type = 1;
+  string error_message = 2;
+}
+
+message ReportActivityResultResponse {}
+
+// ---------------------------------------------------------------------------
+// The service
+// ---------------------------------------------------------------------------
+
+service Chronicle {
+  rpc StartWorkflow(StartWorkflowRequest) returns (StartWorkflowResponse);
+  rpc GetWorkflowResult(GetWorkflowResultRequest) returns (GetWorkflowResultResponse);
+  rpc PollActivityTask(PollActivityTaskRequest) returns (PollActivityTaskResponse);
+  rpc ReportActivityResult(ReportActivityResultRequest) returns (ReportActivityResultResponse);
+}

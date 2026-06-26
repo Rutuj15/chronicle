@@ -7,7 +7,17 @@ authors = [
     { name = "Rutuj15", email = "rutujvp@gmail.com" }
 ]
 requires-python = ">=3.12"
-dependencies = []
+# The gRPC toolchain must be version-coherent: grpcio (runtime) and
+# grpcio-tools (codegen, a dev dep) are released in lockstep, and each
+# grpcio-tools expects a specific protobuf range. We keep the floors loose so
+# uv can resolve grpcio + grpcio-tools + protobuf together instead of pinning a
+# protobuf too new for any grpcio-tools (which forces a fallback to a legacy
+# sdist-only build).
+dependencies = [
+    "aiosqlite>=0.22.1",
+    "grpcio>=1.71",
+    "protobuf>=4.21",
+]
 
 [build-system]
 requires = ["uv_build>=0.11.8,<0.12.0"]
@@ -15,14 +25,19 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "grpcio-tools>=1.81.1",
     "mypy>=2.1.0",
     "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
     "ruff>=0.15.18",
 ]
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# The gRPC stubs under src/chronicle/proto are code-generated (tools/gen_proto.py,
+# from chronicle.proto) -- never lint or format them.
+exclude = ["src/chronicle/proto"]
 
 [tool.ruff.lint]
 # E/W = pycodestyle, F = pyflakes, I = isort, UP = pyupgrade,
@@ -39,7 +54,18 @@ python_version = "3.12"
 strict = true
 # We drive coroutines manually; a few unavoidable .send() sites are hard to type.
 # Narrow relaxations can be added inline (# type: ignore[...]) only where justified.
+# The gRPC stubs under proto/ are code-generated (tools/gen_proto.py, from
+# chronicle.proto): never report errors inside them, but keep them in the graph so
+# the engine/worker/client code that imports them still gets their types.
+[[tool.mypy.overrides]]
+module = "chronicle.proto.*"
+ignore_errors = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+# pytest-asyncio: the distributed tests (Week 5, slice 3b+) run a real grpc.aio
+# server with worker + client as async tasks in ONE loop, so they are async def.
+# auto mode marks them automatically; existing sync def tests (which wrap their
+# own asyncio.run) are unaffected.
+asyncio_mode = "auto"
