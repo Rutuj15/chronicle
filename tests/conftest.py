@@ -22,15 +22,23 @@ from collections.abc import Callable, Coroutine
 from typing import Any
 
 from chronicle.events import JsonValue
-from chronicle.runtime import ActivityRegistry, AsyncSleeper, Clock, EventLog, run
+from chronicle.runtime import (
+    ActivityExecutor,
+    ActivityRegistry,
+    AsyncSleeper,
+    Clock,
+    EventLog,
+    run,
+)
 
 
 def run_sync[R](
     workflow: Callable[..., Coroutine[Any, Any, R]],
     args: tuple[JsonValue, ...],
     log: EventLog,
-    registry: ActivityRegistry,
+    registry: ActivityRegistry | None = None,
     *,
+    executor: ActivityExecutor | None = None,
     workflow_id: str | None = None,
     now: Clock = time.time,
     sleep: AsyncSleeper = asyncio.sleep,
@@ -38,11 +46,21 @@ def run_sync[R](
     """Run the async engine to completion under a fresh event loop.
 
     A synchronous adapter around the coroutine :func:`run`: it mirrors ``run``'s
-    signature and drives it via :func:`asyncio.run`, so the suite stays
-    dependency-free (no pytest-asyncio) while exercising the real async path.
+    signature (a registry *or* an executor) and drives it via :func:`asyncio.run`,
+    so the suite stays dependency-free (no pytest-asyncio) while exercising the
+    real async path.
     """
     return asyncio.run(
-        run(workflow, args, log, registry, workflow_id=workflow_id, now=now, sleep=sleep)
+        run(
+            workflow,
+            args,
+            log,
+            registry,
+            executor=executor,
+            workflow_id=workflow_id,
+            now=now,
+            sleep=sleep,
+        )
     )
 
 
