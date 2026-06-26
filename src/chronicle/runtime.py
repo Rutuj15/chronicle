@@ -15,7 +15,7 @@ cursor ``i`` is still inside the recorded history.
 
 The append-only log this replays over is the ``EventLog`` seam, defined in
 ``history.py``; ``run`` is indifferent to whether that log is in memory or on
-disk -- which is what lets Week 2 swap in SQLite without touching this loop.
+disk -- which is what lets SQLite swap in without touching this loop.
 """
 
 import asyncio
@@ -42,8 +42,8 @@ from .retry import RetryPolicy, idempotency_key
 # An activity is plain side-effectful code: takes JSON args, returns a JSON
 # value. It is an ``async def`` so the runtime can ``await`` it -- which is what
 # makes a waiting activity cooperative (it parks the workflow without blocking
-# the engine) and is the prerequisite for ``asyncio.wait_for`` timeouts (Week 5,
-# slice 2). It runs once per execution and is never replayed.
+# the engine) and is the prerequisite for
+# ``asyncio.wait_for`` timeouts. It runs once per execution and is never replayed.
 #
 # Blocking work is NOT auto-wrapped: an activity that must call a synchronous,
 # blocking function wraps it itself with ``await asyncio.to_thread(fn, ...)``.
@@ -58,8 +58,8 @@ class ActivitySpec:
     """An activity bound to its execution policies.
 
     Activities are registered by name alongside the policies that govern how the
-    runtime runs them: ``retry`` and ``idempotent`` (both Week 4) plus a
-    per-attempt ``timeout`` (Week 5, slice 2). When ``idempotent`` is set the
+    runtime runs them: ``retry`` and ``idempotent`` plus a
+    per-attempt ``timeout``. When ``idempotent`` is set the
     runtime injects a stable ``idempotency_key`` keyword arg into each call so
     the activity can dedup across the at-least-once boundary; when ``timeout``
     is set each execution attempt runs under ``asyncio.wait_for``, which cancels
@@ -113,8 +113,8 @@ AsyncSleeper = Callable[[float], Awaitable[None]]
 # knows an activity only by name + JSON args -- locating it, running it under its
 # retry/timeout/idempotency policy, and returning its result (or raising on
 # terminal failure) are the executor's concern. run() builds a
-# LocalActivityExecutor by default, so Weeks 1-4 run activities in-process
-# exactly as before. Slice 3b adds a remote executor that serializes a task and
+# LocalActivityExecutor by default, so the in-process path runs activities
+# exactly as before. A remote executor serializes a task and
 # awaits a worker process's report -- the SAME loop, a different executor, which
 # is the whole point of the seam. execute() returns the result or raises;
 # _execute wraps either into one Completed/Failed event, so the determinism model
@@ -202,7 +202,7 @@ async def _execute(
 
     All side effects live here: for an activity, *delegating* to the executor
     (which locates and runs it under its policy -- in-process via the registry,
-    or, in slice 3b, in a worker process); reading the injected clock; or
+    or in a worker process); reading the injected clock; or
     stamping a timer's deadline. On success the activity's result is recorded;
     on failure -- after the retry policy is exhausted -- we record a ``Failed``
     event (and the loop re-raises it to abort).
@@ -220,7 +220,7 @@ async def _execute(
             # either into a single event, so one invocation is always one
             # Completed/Failed. This branch is the only
             # place the loop reaches outside itself, which is precisely the seam
-            # slice 3b swaps for a remote executor.
+            # a remote executor fills.
             try:
                 result = await executor.execute(name, args, workflow_id=workflow_id, seq=seq)
             except _ActivityExecutionError as exc:
@@ -250,8 +250,8 @@ async def _execute(
 def _normalize_registry(registry: ActivityRegistry) -> dict[str, ActivitySpec]:
     """Accept bare callables OR ActivitySpecs; return specs throughout.
 
-    Existing callers register plain functions (``{"greet": greet}``); Week 4
-    adds ``ActivitySpec`` to attach a retry policy. Normalizing once, here, lets
+    Existing callers register plain functions (``{"greet": greet}``); an
+    ``ActivitySpec`` attaches a retry policy. Normalizing once, here, lets
     :func:`_execute` assume it always has a spec, so the bare-callable default
     (no retry) keeps working without touching every call site.
     """
@@ -330,7 +330,7 @@ async def _run_activity(
     while True:
         attempt += 1
         try:
-            # Per-attempt wall-clock budget (Week 5, slice 2). asyncio.wait_for
+            # Per-attempt wall-clock budget. asyncio.wait_for
             # cancels the activity's task past `spec.timeout` seconds and raises
             # TimeoutError -- caught below like any failure, so a timeout is
             # retried per the policy and (on exhaustion) recorded as one Failed.
@@ -352,12 +352,12 @@ class LocalActivityExecutor:
     """Run activities in-process against a registry -- the pre-distribution executor.
 
     This is the executor :func:`run` builds by default from a registry, so every
-    Weeks 1-4 call site and test runs activities exactly as before, in the engine
-    process. It is also the "local" half of the slice-3 seam: the same ``run``
+    call site and test runs activities exactly as before, in the engine
+    process. It is also the "local" half of the executor seam: the same ``run``
     loop, handed a *remote* executor instead, dispatches activities to a worker
     process with no other change. Activities are looked up by name, given their
     engine-minted idempotency key, and run under their :class:`ActivitySpec`
-    policy via :func:`_run_activity` -- the same loop a worker reuses in slice 3b,
+    policy via :func:`_run_activity` -- the same loop a worker reuses,
     so retry/timeout/idempotency stays one implementation in one place.
     """
 
@@ -470,13 +470,13 @@ async def run[R](
 
     ``registry`` (the default path) runs activities in-process via a
     :class:`LocalActivityExecutor`; pass ``executor=`` instead to run them
-    elsewhere -- the slice-3b remote executor dispatches each activity to a
+    elsewhere -- a remote executor dispatches each activity to a
     worker process. Exactly one of the two is given.
     """
-    # The executor is the slice-3 seam: an explicit ``executor=`` is the
+    # The executor is the seam: an explicit ``executor=`` is the
     # distribution path (a remote executor that dispatches to a worker process),
     # while ``registry`` (the default) runs activities in-process via a
-    # LocalActivityExecutor -- exactly the Weeks 1-4 behavior, so every existing
+    # LocalActivityExecutor -- exactly the same behavior, so every existing
     # call site is unchanged. Bare callables in a registry are normalized to
     # default specs first. Exactly one of the two is given.
     if executor is not None and registry is not None:

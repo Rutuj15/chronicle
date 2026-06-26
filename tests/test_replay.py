@@ -1,4 +1,4 @@
-"""Week 1 definition-of-done tests: deterministic replay with no re-execution.
+"""Deterministic-replay tests: replay executes no activities.
 
 A workflow runs once (activities execute + events are recorded), then replays
 over the same log with activities NOT re-run and an identical result. That gap

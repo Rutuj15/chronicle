@@ -1,4 +1,4 @@
-"""Week 2 definition-of-done: durable execution across a real process death.
+"""Durable execution across a real process death.
 
 Run it with no arguments to see the whole story::
 

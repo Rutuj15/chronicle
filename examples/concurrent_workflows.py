@@ -1,10 +1,10 @@
-"""Week 5, slice 1 payoff: cooperative concurrency on the async engine.
+"""Cooperative concurrency on the async engine.
 
 Run it::
 
     uv run python examples/concurrent_workflows.py
 
-Before Week 5 the engine ran synchronously to completion: one ``run`` drove one
+Before the async engine, ``run`` ran synchronously to completion: it drove one
 workflow and executed every activity inline, blocking the thread. A waiting
 activity (or a timer) therefore stalled *everything* -- a second workflow could
 not progress until the first's wait finished.
@@ -13,7 +13,7 @@ Now ``run`` is a coroutine and activities are ``async def``. A workflow that
 ``await``s an activity *cooperatively* parks itself, yielding to the event loop
 so other workflows can advance. Two workflows, each running a 2-second activity,
 complete together in ~2 seconds -- not ~4. That overlap is the payoff of
-step-and-suspend, and the foundation the distributed workers (Week 5, slice 3)
+step-and-suspend, and the foundation the distributed workers
 build on: an activity that blocks on network IO will no longer freeze the engine.
 """
 

@@ -1,4 +1,4 @@
-"""Week 3 definition-of-done tests: durable timers survive a mid-sleep crash.
+"""Durable-timer tests: a timer survives a mid-sleep crash.
 
 A workflow that suspends on a timer records the absolute deadline *before* it
 waits. On resume -- even after the runtime is discarded -- the workflow replays

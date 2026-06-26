@@ -1,6 +1,6 @@
-"""Week 2 durability tests: the event log survives a real process restart.
+"""Durability tests: the event log survives a real process restart.
 
-The same replay loop from Week 1 now runs over a SQLite-backed log. These tests
+The same replay loop now runs over a SQLite-backed log. These tests
 prove the log genuinely lives on disk -- not in memory -- by discarding the
 runtime, the log object, and even the database connection between recording and
 replaying, and showing zero activity re-execution and an identical result.
@@ -38,7 +38,7 @@ async def two_step(ctx: WorkflowContext, name: str) -> str:
 
 
 async def sleep_once(ctx: WorkflowContext, duration: float) -> JsonValue:
-    """Sleep once; returns the recorded deadline (Week 3 durable timer)."""
+    """Sleep once; returns the recorded deadline (a durable timer)."""
     return await ctx.sleep(duration)
 
 
@@ -103,7 +103,7 @@ def test_log_survives_connection_reopen(tmp_path: Path) -> None:
 def test_resume_from_partial_persisted_prefix(tmp_path: Path) -> None:
     """A crash after only the first event was persisted: reopen and resume.
 
-    Mirrors Week 1's prefix test, but the prefix is real rows on disk and the
+    Mirrors the in-memory prefix test, but the prefix is real rows on disk and the
     resume replays them from SQLite rather than from a Python list.
     """
     registry, _calls = _counting_registry()

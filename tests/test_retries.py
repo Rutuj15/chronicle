@@ -1,4 +1,4 @@
-"""Week 4 (part 1): activity retry policies.
+"""Activity retry policies.
 
 Activities are at-least-once and may fail transiently. A RetryPolicy retries an
 activity before recording a terminal failure. These tests pin the contract:

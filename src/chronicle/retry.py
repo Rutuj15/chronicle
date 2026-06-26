@@ -1,6 +1,6 @@
 """Retry policy for activities.
 
-Activities execute at-least-once (Week 2's per-event fsync boundary) and may
+Activities execute at-least-once (one fsync per event is the durability boundary) and may
 fail transiently. A :class:`RetryPolicy` says how many times to try an activity
 before its failure is recorded, and how long to wait between attempts.
 
@@ -30,7 +30,7 @@ class RetryPolicy:
 
     Attributes:
         max_attempts: total attempts including the first. ``1`` means try once
-            and never retry -- the behavior of Weeks 1-3. Must be ``>= 1``.
+            and never retry -- the default. Must be ``>= 1``.
         initial_backoff: seconds to wait before the *second* attempt. ``0.0``
             retries immediately. Must be ``>= 0``.
         backoff_factor: multiply the last wait by this after each failure,

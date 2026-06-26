@@ -1,7 +1,7 @@
 """The workflow-facing API: ``WorkflowContext`` and its awaitable bridge.
 
-Workflow code never touches the runtime directly. It only ever does two things
-in Week 1 -- run an activity, or read the clock -- and both go through
+Workflow code never touches the runtime directly. It only ever does two things --
+run an activity, or read the clock -- and both go through
 ``WorkflowContext``. Each call returns an *awaitable* whose ``await`` yields a
 Command out to the runtime's driver loop and resolves to the recorded result.
 """
@@ -55,7 +55,7 @@ class WorkflowContext:
     def activity(self, name: str, *args: JsonValue) -> _CommandAwaitable:
         """Yield intent to run a registered activity by name with positional args.
 
-        Week 1 supports positional args only -- enough to stay JSON-serializable
+        Only positional args are supported -- enough to stay JSON-serializable
         and to keep the command shape simple. Keyword args would map to a dict
         and can be added later without changing the model.
         """

@@ -1,6 +1,6 @@
-"""Week 5, slice 2: per-attempt activity timeouts.
+"""Per-attempt activity timeouts.
 
-With async activities (slice 1) a real wall-clock timeout can now *interrupt* an
+With async activities a real wall-clock timeout can now *interrupt* an
 in-flight call: ``asyncio.wait_for`` cancels the activity's task past the budget
 and raises ``TimeoutError``. The timeout lives on ``ActivitySpec`` -- execution
 policy, like retry/idempotency -- so it is excluded from the determinism guard
@@ -132,7 +132,7 @@ def test_replay_does_not_re_time_out() -> None:
 
     # Replay under a PATHOLOGICAL 0.0s budget: pure replay never calls _execute,
     # so the timeout is never consulted -> the recorded result returns and the
-    # activity does not run at all (Week-1 DoD holds: zero executions on replay).
+    # activity does not run at all (replay performs zero executions).
     result = run_sync(call_activity, ("quick",), log, {"quick": ActivitySpec(quick, timeout=0.0)})
 
     assert result == "ok"

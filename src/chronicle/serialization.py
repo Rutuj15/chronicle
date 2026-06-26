@@ -20,7 +20,7 @@ Two properties make this more than a ``json.dumps`` of the dataclass:
 
 JSON, not pickle: the result/args payloads are already JSON-native by contract,
 JSON is human-inspectable from the ``sqlite3`` CLI, and it stays
-portable when the store moves to Postgres in Week 5. The envelope carries a
+portable when the store moves to Postgres. The envelope carries a
 ``v`` (version) tag so a future schema change can migrate old logs rather than
 reject them.
 """

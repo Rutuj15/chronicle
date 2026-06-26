@@ -1,9 +1,9 @@
-"""The ActivityExecutor seam (Week 5, slice 3a).
+"""The ActivityExecutor seam.
 
 ``run`` can take an explicit ``executor=`` instead of a registry: the loop drives
 the workflow exactly as before, but each activity is run by that executor rather
-than in-process. This is the seam slice 3b swaps for a remote executor that
-dispatches to a worker process, so these tests pin the contract every executor
+than in-process. This is the seam a remote executor plugs into -- dispatching each activity
+to a worker process -- so these tests pin the contract every executor
 must meet: it is called per activity with the name, args, workflow_id, and seq;
 its return value flows back into the workflow; and only an execution-failure
 signal becomes a recorded ``Failed`` -- anything else it raises propagates
@@ -53,8 +53,8 @@ class _RecordingExecutor:
 
 def test_custom_executor_runs_activities_instead_of_a_registry() -> None:
     # The workflow asks for activity "greet"; the executor -- not a registry --
-    # supplies the result. This delegation is precisely what slice 3b aims at a
-    # worker process.
+    # supplies the result. This delegation is exactly what reaches a worker
+    # process over the wire.
     executor = _RecordingExecutor({"greet": "hello from executor"})
     result = run_sync(_call_activity, ("greet", "world"), InMemoryEventLog(), executor=executor)
     assert result == "hello from executor"

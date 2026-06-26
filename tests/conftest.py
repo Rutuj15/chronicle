@@ -1,6 +1,6 @@
 """Shared test helpers for the Chronicle suite.
 
-The engine's ``run`` is a coroutine (Week 5: the driver is async). These helpers
+The engine's ``run`` is a coroutine (the driver is async). These helpers
 let the tests stay synchronous ``def test_...`` -- with no pytest-asyncio
 dependency -- while exercising the full async path:
 

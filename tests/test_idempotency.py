@@ -1,4 +1,4 @@
-"""Week 4 (part 2): idempotency via a stable, engine-minted key.
+"""Idempotency via a stable, engine-minted key.
 
 Activities are at-least-once: a crash after execution but before the outcome is
 fsync'd re-runs the activity on resume, and a retry re-runs it within a run.

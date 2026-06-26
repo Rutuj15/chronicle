@@ -11,7 +11,7 @@ event log. Two object families make that concrete:
   command by pairing it with its outcome.
 
 Commands and events are deliberately separate types even though they pair 1:1
-in Week 1: a command is a question, an event is the recorded answer. Conflating
+by design: a command is a question, an event is the recorded answer. Conflating
 them would erase the line between "what the workflow asked for" and "what
 actually happened" -- the very line the determinism guard checks.
 """
@@ -20,7 +20,7 @@ from dataclasses import dataclass
 
 # --- JSON value types --------------------------------------------------------
 # Activity results (and the args passed to activities) must be JSON-serializable
-# from day one, so Week 2's SQLite persistence is a drop-in rather than a
+# from day one, so SQLite persistence is a drop-in rather than a
 # redesign. We express "JSON-shaped" precisely -- with Python 3.12's ``type``
 # statement -- so mypy --strict can enforce it everywhere a value crosses the
 # workflow/runtime boundary.
@@ -52,7 +52,7 @@ class ActivityCommand(Command):
 
     Activities are keyed by *string name*, not by function reference, so a
     command stays JSON-serializable and can travel across processes once
-    distributed workers land in Week 5.
+    distributed workers land.
     """
 
     name: str
@@ -120,9 +120,9 @@ class Completed(Event):
 class Failed(Event):
     """An activity raised -- recorded honestly, *not* retried.
 
-    Reserved so the event schema is stable from the start. Week 1 workflows are
-    success-only: an activity that raises aborts the run and we record this.
-    Week 4 layers retry/timeout policies on top of this same event type.
+    Reserved so the event schema is stable from the start. Workflows are
+    success-only by default: an activity that raises aborts the run and we record
+    this. Retry/timeout policies layer on top of this same event type.
     """
 
     error_type: str

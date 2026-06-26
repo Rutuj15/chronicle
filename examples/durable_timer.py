@@ -1,4 +1,4 @@
-"""Week 3 definition-of-done: a durable timer survives a worker killed mid-sleep.
+"""A durable timer survives a worker killed mid-sleep.
 
 Run it with no arguments to see the whole story::
 
@@ -11,7 +11,7 @@ Process 2 opens the same file cold, replays up to the timer, and waits only the
 *remainder* of the original deadline before completing.
 
 That is durable timers made real: the deadline lived on disk (one fsync per
-event, Week 2's boundary), so the crashed worker's in-flight sleep cost nothing
+event -- the durability boundary), so the crashed worker's in-flight sleep cost nothing
 -- on resume the workflow waited exactly what was left, not the whole duration
 again.
 

@@ -1,4 +1,4 @@
-"""Week 4 definition-of-done: exactly-once side effects under at-least-once exec.
+"""Exactly-once side effects under at-least-once execution.
 
 Run it with no arguments to see the whole story::
 
