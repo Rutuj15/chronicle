@@ -3,8 +3,7 @@
 Workflow code never touches the runtime directly. It only ever does two things
 in Week 1 -- run an activity, or read the clock -- and both go through
 ``WorkflowContext``. Each call returns an *awaitable* whose ``await`` yields a
-Command out to the runtime's driver loop and resolves to the recorded result
-(CLAUDE.md §2, §5).
+Command out to the runtime's driver loop and resolves to the recorded result.
 """
 
 from collections.abc import Generator
@@ -18,7 +17,7 @@ class _CommandAwaitable:
     Its ``__await__`` is a generator that yields the Command (handing it to the
     driver) and returns whatever the driver sends back as the result. This is
     exactly how ``asyncio.Future`` talks to an event loop -- we are just being
-    our own tiny loop here, with no asyncio involved (CLAUDE.md §5).
+    our own tiny loop here, with no asyncio involved.
 
     The Command type is the only thing that varies between activities and
     ``now()``; the await / yield / result mechanics are identical, so one bridge
@@ -50,8 +49,7 @@ class WorkflowContext:
         into that inner frame and never reach our driver's ``coro.send()``. By
         returning a plain awaitable whose ``__await__`` performs the yield, the
         Command propagates straight out through every async frame to our loop.
-        This is the single most common bug when hand-driving coroutines
-        (CLAUDE.md §5).
+        This is the single most common bug when hand-driving coroutines.
     """
 
     def activity(self, name: str, *args: JsonValue) -> _CommandAwaitable:
@@ -79,8 +77,7 @@ class WorkflowContext:
         This is a *durable* sleep, not a busy wait: the runtime records the
         command with its absolute deadline and the workflow suspends until that
         deadline passes. A crash mid-sleep is harmless -- the recorded deadline
-        survives, so on resume the workflow waits only the remainder
-        (CLAUDE.md §4, Week 3).
+        survives, so on resume the workflow waits only the remainder.
 
         ``duration`` is the deterministic intent the determinism guard replays;
         the deadline the runtime derives from it is recorded only, never

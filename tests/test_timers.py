@@ -4,7 +4,7 @@ A workflow that suspends on a timer records the absolute deadline *before* it
 waits. On resume -- even after the runtime is discarded -- the workflow replays
 up to that timer and then waits only the *remainder* of the original deadline,
 not the whole duration again. That remainder-respect across a discard is durable
-timers made real (CLAUDE.md §2, §4).
+timers made real.
 
 Every test injects a fake clock so no real wall-clock time is spent: ``now`` is
 a controllable float and ``sleep`` advances it (and records the wait) instead of

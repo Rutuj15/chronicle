@@ -18,8 +18,8 @@ Two properties make this more than a ``json.dumps`` of the dataclass:
   durable replay. Decoding coerces ``args`` back to a tuple. That single line is
   what lets a serialized log satisfy the determinism guard unchanged.
 
-JSON, not pickle: the result/args payloads are already JSON-native by contract
-(CLAUDE.md §8), JSON is human-inspectable from the ``sqlite3`` CLI, and it stays
+JSON, not pickle: the result/args payloads are already JSON-native by contract,
+JSON is human-inspectable from the ``sqlite3`` CLI, and it stays
 portable when the store moves to Postgres in Week 5. The envelope carries a
 ``v`` (version) tag so a future schema change can migrate old logs rather than
 reject them.

@@ -84,7 +84,7 @@ def idempotency_key(workflow_id: str, seq: int) -> str:
     log. Both are stable by construction: ``workflow_id`` is fixed for the run,
     and deterministic replay guarantees the same command lands at the same
     position every time. So the same invocation always receives the same key --
-    across retries and across the crash boundary (CLAUDE.md §4, Week 4).
+    across retries and across the crash boundary.
 
     Note the key is *computed*, never stored: it is not part of the command or
     the event, so it costs nothing in the log. The dedup *state* lives wherever

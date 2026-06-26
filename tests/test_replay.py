@@ -2,7 +2,7 @@
 
 A workflow runs once (activities execute + events are recorded), then replays
 over the same log with activities NOT re-run and an identical result. That gap
-between the two runs *is* durable execution (CLAUDE.md §2, §5). These tests pin
+between the two runs *is* durable execution. These tests pin
 every claim behind it: the three run modes, the determinism guard in both
 directions, the clock as a recorded command, and honest failure handling.
 """

@@ -13,7 +13,7 @@ Process 2 opens the same file cold, replays up to the timer, and waits only the
 That is durable timers made real: the deadline lived on disk (one fsync per
 event, Week 2's boundary), so the crashed worker's in-flight sleep cost nothing
 -- on resume the workflow waited exactly what was left, not the whole duration
-again (CLAUDE.md §2, §4).
+again.
 
 Each phase can also be driven directly::
 

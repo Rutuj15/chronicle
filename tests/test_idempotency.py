@@ -4,7 +4,7 @@ Activities are at-least-once: a crash after execution but before the outcome is
 fsync'd re-runs the activity on resume, and a retry re-runs it within a run.
 The engine cannot make a side-effecting activity exactly-once -- but it can hand
 it a key identical on every execution, so the activity (or the downstream
-system) can dedup. These tests pin that contract (CLAUDE.md §4, §8).
+system) can dedup. These tests pin that contract.
 """
 
 import pytest

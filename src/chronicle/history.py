@@ -4,7 +4,7 @@ The driver loop (``runtime.run``) talks *only* to the ``EventLog`` interface
 defined here, never to a concrete store. That is the whole point of the seam:
 Week 1 ships one in-memory implementation, and Week 2 adds a SQLite-backed store
 behind this same interface, so swapping storage touches one module and leaves
-the replay loop untouched (CLAUDE.md §7, §9).
+the replay loop untouched.
 
 This module owns *storage shape*, not serialization: an ``EventLog`` deals in
 live ``Event`` objects. How those objects become bytes on disk is a separate
@@ -24,7 +24,7 @@ class EventLog(Protocol):
     The driver loop talks only to this interface, never to a concrete store.
     Week 1 has one implementation (``InMemoryEventLog``); Week 2 adds a
     SQLite-backed store behind this same interface, so swapping storage touches
-    one module and leaves the loop untouched (CLAUDE.md §7).
+    one module and leaves the loop untouched.
     """
 
     def append(self, event: Event) -> None: ...
@@ -64,10 +64,10 @@ class SqliteEventLog(EventLog):
       is fed back from history and never re-executes.
 
     One fsync per event is deliberate: correct and explainable first, batched
-    later (CLAUDE.md §4, Week 2). Storage is scoped by ``workflow_id`` -- one
+    later. Storage is scoped by ``workflow_id`` -- one
     file holds many workflows' histories, keyed by ``(workflow_id, seq)`` where
     ``seq`` is the 0-based append order, i.e. exactly the cursor the replay loop
-    indexes with. The schema is Postgres-portable for Week 5 (CLAUDE.md §7).
+    indexes with. The schema is Postgres-portable for Week 5.
 
     The connection is *injected and owned by the caller*; the log sets its own
     durability pragma and ensures the schema, so the durability contract holds
@@ -81,7 +81,7 @@ class SqliteEventLog(EventLog):
         # FULL = every commit fsyncs (the durability boundary). The default
         # rollback journal keeps the store to a single .db file after commit --
         # the simplest possible "the log is this one file" story. WAL is the
-        # Week 5 choice, when concurrent readers appear (CLAUDE.md §7).
+        # Week 5 choice, when concurrent readers appear.
         conn.execute("PRAGMA synchronous = FULL")
         conn.execute(
             "CREATE TABLE IF NOT EXISTS events ("

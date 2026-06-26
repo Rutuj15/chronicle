@@ -5,7 +5,7 @@ activity before recording a terminal failure. These tests pin the contract:
 retry-then-succeed records a single Completed; exhaustion records Failed and
 raises; pure replay never re-executes or re-retries; backoff uses the injected
 sleep so it is fast and assertable; and a bare callable keeps the default
-no-retry behavior (CLAUDE.md §4, §8).
+no-retry behavior.
 """
 
 import pytest

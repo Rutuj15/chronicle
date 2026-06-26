@@ -3,8 +3,8 @@
 The same replay loop from Week 1 now runs over a SQLite-backed log. These tests
 prove the log genuinely lives on disk -- not in memory -- by discarding the
 runtime, the log object, and even the database connection between recording and
-replaying, and showing zero activity re-execution and an identical result
-(CLAUDE.md §2, §4). One commit (an fsync) per event is the durability boundary.
+replaying, and showing zero activity re-execution and an identical result.
+One commit (an fsync) per event is the durability boundary.
 """
 
 import sqlite3

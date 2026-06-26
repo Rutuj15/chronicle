@@ -1,7 +1,7 @@
 """Chronicle's event-log vocabulary: Commands and Events.
 
 A workflow is a pure function of its definition, its inputs, and the recorded
-event log (see CLAUDE.md §1). Two object families make that concrete:
+event log. Two object families make that concrete:
 
 * **Commands** -- the workflow's *intent*, yielded OUT of the coroutine
   ("please run activity ``greet`` with arg ``world``", or "tell me the time").
@@ -42,7 +42,7 @@ class Command:
 
     Subclasses are frozen dataclasses, so commands compare by value. The
     determinism guard relies on that: it compares a freshly-yielded command
-    against the recorded one and raises on any mismatch (CLAUDE.md §5).
+    against the recorded one and raises on any mismatch.
     """
 
 
@@ -76,7 +76,7 @@ class SleepCommand(Command):
 
     This is the first command whose resolution is *deferred in real time*: a
     workflow that issues it must not resume until that much time has actually
-    passed (CLAUDE.md §4, Week 3).
+    passed.
 
     Only the ``duration`` lives here, never the absolute deadline. The duration
     is deterministic intent -- two runs of the same workflow ask to sleep the
@@ -84,7 +84,7 @@ class SleepCommand(Command):
     *deadline* (``now() + duration``) depends on when the run started, so it is
     non-deterministic and is recorded only in the matching :class:`TimerFired`
     event, never compared. This is the same intent/outcome split as activity
-    args vs. result (CLAUDE.md §5), applied to time.
+    args vs. result, applied to time.
     """
 
     duration: float

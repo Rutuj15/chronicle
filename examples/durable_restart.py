@@ -7,7 +7,7 @@ Run it with no arguments to see the whole story::
 Chronicle records a workflow's history to SQLite in one process; that process
 exits; then a *second* process opens the same file cold and replays the workflow
 to the identical result -- WITHOUT re-running a single activity. That gap
-between the two processes is durable execution made real (CLAUDE.md §2, §4).
+between the two processes is durable execution made real.
 
 Each event is its own committed transaction under ``synchronous = FULL`` (an
 fsync), so the history is durable the moment it is recorded -- survival comes

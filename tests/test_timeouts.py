@@ -9,7 +9,7 @@ retried per-attempt under the policy, recorded as one ``Failed`` on exhaustion.
 
 Note: ``asyncio.wait_for`` reads the event loop's own monotonic clock, so these
 tests use small *real* wall-clock values (not the injected ``FakeClock``) -- the
-first behaviour in the suite tested against real time (CLAUDE.md §8, Week 5).
+first behaviour in the suite tested against real time.
 """
 
 import asyncio
