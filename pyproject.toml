@@ -61,6 +61,14 @@ strict = true
 module = "chronicle.proto.*"
 ignore_errors = true
 
+# grpcio ships no type stubs (no py.typed, no grpc/aio stubs), and types-grpcio's
+# grpc.aio coverage is spotty, so treat the grpc surface as Any. Our own code
+# still gets type-checked at every non-grpc boundary; the proto messages (which
+# DO ship .pyi stubs) remain typed.
+[[tool.mypy.overrides]]
+module = "grpc.*"
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
