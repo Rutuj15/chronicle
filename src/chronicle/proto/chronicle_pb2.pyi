@@ -53,18 +53,20 @@ class PollActivityTaskRequest(_message.Message):
     def __init__(self, task_queue: _Optional[str] = ...) -> None: ...
 
 class ActivityTask(_message.Message):
-    __slots__ = ("task_id", "workflow_id", "activity_name", "args_json", "idempotency_key")
+    __slots__ = ("task_id", "workflow_id", "activity_name", "args_json", "idempotency_key", "attempts")
     TASK_ID_FIELD_NUMBER: _ClassVar[int]
     WORKFLOW_ID_FIELD_NUMBER: _ClassVar[int]
     ACTIVITY_NAME_FIELD_NUMBER: _ClassVar[int]
     ARGS_JSON_FIELD_NUMBER: _ClassVar[int]
     IDEMPOTENCY_KEY_FIELD_NUMBER: _ClassVar[int]
+    ATTEMPTS_FIELD_NUMBER: _ClassVar[int]
     task_id: str
     workflow_id: str
     activity_name: str
     args_json: str
     idempotency_key: str
-    def __init__(self, task_id: _Optional[str] = ..., workflow_id: _Optional[str] = ..., activity_name: _Optional[str] = ..., args_json: _Optional[str] = ..., idempotency_key: _Optional[str] = ...) -> None: ...
+    attempts: int
+    def __init__(self, task_id: _Optional[str] = ..., workflow_id: _Optional[str] = ..., activity_name: _Optional[str] = ..., args_json: _Optional[str] = ..., idempotency_key: _Optional[str] = ..., attempts: _Optional[int] = ...) -> None: ...
 
 class PollActivityTaskResponse(_message.Message):
     __slots__ = ("task",)
@@ -91,5 +93,17 @@ class ActivityFailure(_message.Message):
     def __init__(self, error_type: _Optional[str] = ..., error_message: _Optional[str] = ...) -> None: ...
 
 class ReportActivityResultResponse(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class ReleaseActivityTaskRequest(_message.Message):
+    __slots__ = ("task_id", "retry_after_seconds")
+    TASK_ID_FIELD_NUMBER: _ClassVar[int]
+    RETRY_AFTER_SECONDS_FIELD_NUMBER: _ClassVar[int]
+    task_id: str
+    retry_after_seconds: float
+    def __init__(self, task_id: _Optional[str] = ..., retry_after_seconds: _Optional[float] = ...) -> None: ...
+
+class ReleaseActivityTaskResponse(_message.Message):
     __slots__ = ()
     def __init__(self) -> None: ...

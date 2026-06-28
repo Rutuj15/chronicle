@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x1f\x63hronicle/proto/chronicle.proto\x12\tchronicle\"U\n\x14StartWorkflowRequest\x12\x13\n\x0bworkflow_id\x18\x01 \x01(\t\x12\x15\n\rworkflow_name\x18\x02 \x01(\t\x12\x11\n\targs_json\x18\x03 \x01(\t\"\x17\n\x15StartWorkflowResponse\"/\n\x18GetWorkflowResultRequest\x12\x13\n\x0bworkflow_id\x18\x01 \x01(\t\"\xca\x01\n\x19GetWorkflowResultResponse\x12;\n\x06status\x18\x01 \x01(\x0e\x32+.chronicle.GetWorkflowResultResponse.Status\x12\x13\n\x0bresult_json\x18\x02 \x01(\t\x12\x12\n\nerror_type\x18\x03 \x01(\t\x12\x15\n\rerror_message\x18\x04 \x01(\t\"0\n\x06Status\x12\x0b\n\x07RUNNING\x10\x00\x12\r\n\tCOMPLETED\x10\x01\x12\n\n\x06\x46\x41ILED\x10\x02\"-\n\x17PollActivityTaskRequest\x12\x12\n\ntask_queue\x18\x01 \x01(\t\"w\n\x0c\x41\x63tivityTask\x12\x0f\n\x07task_id\x18\x01 \x01(\t\x12\x13\n\x0bworkflow_id\x18\x02 \x01(\t\x12\x15\n\ractivity_name\x18\x03 \x01(\t\x12\x11\n\targs_json\x18\x04 \x01(\t\x12\x17\n\x0fidempotency_key\x18\x05 \x01(\t\"O\n\x18PollActivityTaskResponse\x12*\n\x04task\x18\x01 \x01(\x0b\x32\x17.chronicle.ActivityTaskH\x00\x88\x01\x01\x42\x07\n\x05_task\"\x7f\n\x1bReportActivityResultRequest\x12\x0f\n\x07task_id\x18\x01 \x01(\t\x12\x15\n\x0bresult_json\x18\x02 \x01(\tH\x00\x12-\n\x07\x66\x61ilure\x18\x03 \x01(\x0b\x32\x1a.chronicle.ActivityFailureH\x00\x42\t\n\x07outcome\"<\n\x0f\x41\x63tivityFailure\x12\x12\n\nerror_type\x18\x01 \x01(\t\x12\x15\n\rerror_message\x18\x02 \x01(\t\"\x1e\n\x1cReportActivityResultResponse2\x85\x03\n\tChronicle\x12R\n\rStartWorkflow\x12\x1f.chronicle.StartWorkflowRequest\x1a .chronicle.StartWorkflowResponse\x12^\n\x11GetWorkflowResult\x12#.chronicle.GetWorkflowResultRequest\x1a$.chronicle.GetWorkflowResultResponse\x12[\n\x10PollActivityTask\x12\".chronicle.PollActivityTaskRequest\x1a#.chronicle.PollActivityTaskResponse\x12g\n\x14ReportActivityResult\x12&.chronicle.ReportActivityResultRequest\x1a\'.chronicle.ReportActivityResultResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x1f\x63hronicle/proto/chronicle.proto\x12\tchronicle\"U\n\x14StartWorkflowRequest\x12\x13\n\x0bworkflow_id\x18\x01 \x01(\t\x12\x15\n\rworkflow_name\x18\x02 \x01(\t\x12\x11\n\targs_json\x18\x03 \x01(\t\"\x17\n\x15StartWorkflowResponse\"/\n\x18GetWorkflowResultRequest\x12\x13\n\x0bworkflow_id\x18\x01 \x01(\t\"\xca\x01\n\x19GetWorkflowResultResponse\x12;\n\x06status\x18\x01 \x01(\x0e\x32+.chronicle.GetWorkflowResultResponse.Status\x12\x13\n\x0bresult_json\x18\x02 \x01(\t\x12\x12\n\nerror_type\x18\x03 \x01(\t\x12\x15\n\rerror_message\x18\x04 \x01(\t\"0\n\x06Status\x12\x0b\n\x07RUNNING\x10\x00\x12\r\n\tCOMPLETED\x10\x01\x12\n\n\x06\x46\x41ILED\x10\x02\"-\n\x17PollActivityTaskRequest\x12\x12\n\ntask_queue\x18\x01 \x01(\t\"\x89\x01\n\x0c\x41\x63tivityTask\x12\x0f\n\x07task_id\x18\x01 \x01(\t\x12\x13\n\x0bworkflow_id\x18\x02 \x01(\t\x12\x15\n\ractivity_name\x18\x03 \x01(\t\x12\x11\n\targs_json\x18\x04 \x01(\t\x12\x17\n\x0fidempotency_key\x18\x05 \x01(\t\x12\x10\n\x08\x61ttempts\x18\x06 \x01(\x05\"O\n\x18PollActivityTaskResponse\x12*\n\x04task\x18\x01 \x01(\x0b\x32\x17.chronicle.ActivityTaskH\x00\x88\x01\x01\x42\x07\n\x05_task\"\x7f\n\x1bReportActivityResultRequest\x12\x0f\n\x07task_id\x18\x01 \x01(\t\x12\x15\n\x0bresult_json\x18\x02 \x01(\tH\x00\x12-\n\x07\x66\x61ilure\x18\x03 \x01(\x0b\x32\x1a.chronicle.ActivityFailureH\x00\x42\t\n\x07outcome\"<\n\x0f\x41\x63tivityFailure\x12\x12\n\nerror_type\x18\x01 \x01(\t\x12\x15\n\rerror_message\x18\x02 \x01(\t\"\x1e\n\x1cReportActivityResultResponse\"J\n\x1aReleaseActivityTaskRequest\x12\x0f\n\x07task_id\x18\x01 \x01(\t\x12\x1b\n\x13retry_after_seconds\x18\x02 \x01(\x01\"\x1d\n\x1bReleaseActivityTaskResponse2\xeb\x03\n\tChronicle\x12R\n\rStartWorkflow\x12\x1f.chronicle.StartWorkflowRequest\x1a .chronicle.StartWorkflowResponse\x12^\n\x11GetWorkflowResult\x12#.chronicle.GetWorkflowResultRequest\x1a$.chronicle.GetWorkflowResultResponse\x12[\n\x10PollActivityTask\x12\".chronicle.PollActivityTaskRequest\x1a#.chronicle.PollActivityTaskResponse\x12g\n\x14ReportActivityResult\x12&.chronicle.ReportActivityResultRequest\x1a\'.chronicle.ReportActivityResultResponse\x12\x64\n\x13ReleaseActivityTask\x12%.chronicle.ReleaseActivityTaskRequest\x1a&.chronicle.ReleaseActivityTaskResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -43,16 +43,20 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_GETWORKFLOWRESULTRESPONSE_STATUS']._serialized_end=410
   _globals['_POLLACTIVITYTASKREQUEST']._serialized_start=412
   _globals['_POLLACTIVITYTASKREQUEST']._serialized_end=457
-  _globals['_ACTIVITYTASK']._serialized_start=459
-  _globals['_ACTIVITYTASK']._serialized_end=578
-  _globals['_POLLACTIVITYTASKRESPONSE']._serialized_start=580
-  _globals['_POLLACTIVITYTASKRESPONSE']._serialized_end=659
-  _globals['_REPORTACTIVITYRESULTREQUEST']._serialized_start=661
-  _globals['_REPORTACTIVITYRESULTREQUEST']._serialized_end=788
-  _globals['_ACTIVITYFAILURE']._serialized_start=790
-  _globals['_ACTIVITYFAILURE']._serialized_end=850
-  _globals['_REPORTACTIVITYRESULTRESPONSE']._serialized_start=852
-  _globals['_REPORTACTIVITYRESULTRESPONSE']._serialized_end=882
-  _globals['_CHRONICLE']._serialized_start=885
-  _globals['_CHRONICLE']._serialized_end=1274
+  _globals['_ACTIVITYTASK']._serialized_start=460
+  _globals['_ACTIVITYTASK']._serialized_end=597
+  _globals['_POLLACTIVITYTASKRESPONSE']._serialized_start=599
+  _globals['_POLLACTIVITYTASKRESPONSE']._serialized_end=678
+  _globals['_REPORTACTIVITYRESULTREQUEST']._serialized_start=680
+  _globals['_REPORTACTIVITYRESULTREQUEST']._serialized_end=807
+  _globals['_ACTIVITYFAILURE']._serialized_start=809
+  _globals['_ACTIVITYFAILURE']._serialized_end=869
+  _globals['_REPORTACTIVITYRESULTRESPONSE']._serialized_start=871
+  _globals['_REPORTACTIVITYRESULTRESPONSE']._serialized_end=901
+  _globals['_RELEASEACTIVITYTASKREQUEST']._serialized_start=903
+  _globals['_RELEASEACTIVITYTASKREQUEST']._serialized_end=977
+  _globals['_RELEASEACTIVITYTASKRESPONSE']._serialized_start=979
+  _globals['_RELEASEACTIVITYTASKRESPONSE']._serialized_end=1008
+  _globals['_CHRONICLE']._serialized_start=1011
+  _globals['_CHRONICLE']._serialized_end=1502
 # @@protoc_insertion_point(module_scope)

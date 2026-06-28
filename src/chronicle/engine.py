@@ -25,8 +25,9 @@ identical across the process boundary.
 
 In 3b the per-workflow event log is in memory: the live coroutine IS the
 workflow's state. Engine-log durability + live-coroutine reconstruction on an
-engine crash. The task queue is durable on purpose -- the foundation
-(worker crash recovery) build on.
+engine crash is Week-6 work. The task queue is durable AND leased (3c): a taken
+task is hidden, not deleted, so a lost worker's lease expires and the task
+redelivers to another -- the foundation Week-6 worker crash recovery builds on.
 """
 
 import asyncio
@@ -141,6 +142,7 @@ class Engine(pb_grpc.ChronicleServicer):
         queue: TaskQueue,
         *,
         poll_timeout: float = 5.0,
+        result_timeout: float = 5.0,
     ) -> None:
         self._workflows = workflows
         self._queue = queue
@@ -148,6 +150,10 @@ class Engine(pb_grpc.ChronicleServicer):
         # worker then re-polls). Long enough to be efficient, short enough that a
         # worker shutting down re-polls promptly.
         self._poll_timeout = poll_timeout
+        # How long GetWorkflowResult waits for the workflow to finish before
+        # returning RUNNING (the client then re-polls). A server-side long-poll
+        # window, capped by the call's gRPC deadline.
+        self._result_timeout = result_timeout
         # task_id -> the Future the parked run() is awaiting. Shared by every
         # RemoteActivityExecutor call; resolved by ReportActivityResult.
         self._pending: dict[str, asyncio.Future[JsonValue]] = {}
@@ -210,13 +216,16 @@ class Engine(pb_grpc.ChronicleServicer):
         request: pb.GetWorkflowResultRequest,
         context: grpc.aio.ServicerContext,
     ) -> pb.GetWorkflowResultResponse:
-        """Block until ``workflow_id`` finishes, then report its terminal outcome.
+        """Long-poll ``workflow_id`` for up to a budget, then report its state.
 
-        Awaits the live ``run`` task: a return value becomes ``COMPLETED``; a
-        recorded activity failure (``ActivityFailedError``) or a determinism
-        violation (``NonDeterminismError``) becomes ``FAILED``. In 3b this always
-        returns a terminal outcome -- the ``RUNNING`` case (long-poll timeout)
-        lands with leasing in 3c.
+        Awaits the live ``run`` task for the server-side long-poll window (capped
+        by the call's gRPC deadline). If it finishes in time, a return value
+        becomes ``COMPLETED`` and a recorded activity failure
+        (``ActivityFailedError``) or a determinism violation
+        (``NonDeterminismError``) becomes ``FAILED``. If the budget elapses first,
+        returns ``RUNNING`` so the client may re-poll. ``asyncio.wait`` is used
+        (not ``wait_for``) so a budget expiry never cancels the live run -- the
+        workflow keeps executing across the re-poll.
         """
         if request.workflow_id not in self._runs:
             await context.abort(
@@ -224,8 +233,18 @@ class Engine(pb_grpc.ChronicleServicer):
                 f"no workflow {request.workflow_id!r}",
             )
         task = self._runs[request.workflow_id]
+        budget = self._result_budget(context)
+        if not task.done() and budget > 0:
+            # asyncio.wait does NOT cancel `task` on timeout -- the live run
+            # keeps going; we just stop waiting and report RUNNING. The return
+            # value is unused: we re-check task.done() below instead.
+            await asyncio.wait({task}, timeout=budget)
+        if not task.done():
+            return pb.GetWorkflowResultResponse(
+                status=pb.GetWorkflowResultResponse.RUNNING
+            )
         try:
-            result = await task
+            result = task.result()
         except ActivityFailedError as exc:
             return pb.GetWorkflowResultResponse(
                 status=pb.GetWorkflowResultResponse.FAILED,
@@ -242,6 +261,19 @@ class Engine(pb_grpc.ChronicleServicer):
             status=pb.GetWorkflowResultResponse.COMPLETED,
             result_json=json.dumps(result),
         )
+
+    def _result_budget(self, context: grpc.aio.ServicerContext) -> float:
+        """The long-poll window for GetWorkflowResult, capped by the gRPC deadline.
+
+        ``context.time_remaining()`` is ``None`` when the client set no deadline;
+        otherwise cap the server-side window so we never outlive the call.
+        """
+        remaining = context.time_remaining()
+        if remaining is None:
+            return self._result_timeout
+        # gRPC returns the deadline in seconds (a float) or None; grpc.aio has no
+        # stubs so the call is Any -- coerce to satisfy the float return type.
+        return min(self._result_timeout, float(remaining))
 
     # --- Worker -> Engine ----------------------------------------------------
 
@@ -266,30 +298,57 @@ class Engine(pb_grpc.ChronicleServicer):
         request: pb.ReportActivityResultRequest,
         context: grpc.aio.ServicerContext,
     ) -> pb.ReportActivityResultResponse:
-        """Resolve the parked Future for ``task_id`` with the Worker's outcome.
+        """Resolve the parked Future for ``task_id`` and complete its lease.
 
         The Worker has already applied its retry/timeout policy, so this is
         exactly one result OR one failure. On failure the marker
         (``_ActivityExecutionError``) is reconstituted and set as the Future's
         exception, so ``_execute`` records one ``Failed`` exactly as an in-process
-        failure would. An unknown ``task_id`` (already resolved, or a stale
-        duplicate) is a no-op -- the de-dup home for redelivery is leasing, 3c.
+        failure would. Either terminal outcome also completes the lease
+        (:meth:`TaskQueue.complete`) -- the durable signal a worker finished, so
+        the task is never redelivered. A report for an unknown / already-resolved
+        ``task_id`` (a stale duplicate from a faster delivery) resolves nothing
+        but still completes idempotently. An unset outcome (a malformed report)
+        resolves AND completes nothing -- the lease then expires and the task
+        redelivers.
         """
         fut = self._pending.get(request.task_id)
-        if fut is None or fut.done():
-            return pb.ReportActivityResultResponse()
         outcome = request.WhichOneof("outcome")
         if outcome == "failure":
-            fut.set_exception(
-                _ActivityExecutionError(
-                    request.failure.error_type, request.failure.error_message
+            if fut is not None and not fut.done():
+                fut.set_exception(
+                    _ActivityExecutionError(
+                        request.failure.error_type, request.failure.error_message
+                    )
                 )
-            )
+            await self._queue.complete(request.task_id)
         elif outcome == "result_json":
-            fut.set_result(json.loads(request.result_json))
-        # An unset outcome (malformed report) resolves nothing; the Worker will
-        # time out and the task redelivers once leasing exists.
+            if fut is not None and not fut.done():
+                fut.set_result(json.loads(request.result_json))
+            await self._queue.complete(request.task_id)
+        # An unset outcome (malformed report): resolve nothing, complete nothing
+        # -- the lease expires and the task redelivers (honest, now that leasing
+        # exists, rather than wedging the parked Future forever as in 3b).
         return pb.ReportActivityResultResponse()
+
+    async def ReleaseActivityTask(
+        self,
+        request: pb.ReleaseActivityTaskRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> pb.ReleaseActivityTaskResponse:
+        """Re-queue a task a Worker declined (a nack) -- make it visible again.
+
+        A Worker that cannot action a task (e.g. it lacks the activity during a
+        rolling deploy) calls this instead of reporting a result, and keeps
+        polling. The Engine releases the lease so another Worker gets a shot
+        promptly rather than waiting for the lease to expire. The parked Future
+        stays parked, waiting for whichever delivery eventually reports. A no-op
+        if the task was already completed by another delivery.
+        """
+        await self._queue.release(
+            request.task_id, retry_after=request.retry_after_seconds
+        )
+        return pb.ReleaseActivityTaskResponse()
 
     # --- Lifecycle -----------------------------------------------------------
 

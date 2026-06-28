@@ -35,11 +35,11 @@ message StartWorkflowRequest {
 
 message StartWorkflowResponse {}
 
-// Observe a workflow's outcome. Blocks server-side until the workflow finishes
-// (the engine awaits its live coroutine), then reports success or failure; if
-// the call returns early the workflow is still RUNNING. result_json holds the
-// JSON-encoded return value on COMPLETED; the failure fields describe the
-// terminal error on FAILED.
+// Observe a workflow's outcome. The engine awaits the live coroutine up to a
+// server-side long-poll budget; if the workflow finishes in time it reports
+// COMPLETED/FAILED, otherwise it returns RUNNING so the client may re-poll.
+// result_json holds the JSON-encoded return value on COMPLETED; the failure
+// fields describe the terminal error on FAILED.
 message GetWorkflowResultRequest {
   string workflow_id = 1;
 }
@@ -74,12 +74,20 @@ message PollActivityTaskRequest {
 // right workflow. idempotency_key is engine-minted as "{workflow_id}:{seq}" and
 // is ALWAYS sent; the worker injects it as idempotency_key= only if its local
 // ActivitySpec is idempotent, so the engine never needs to know which are.
+//
+// attempts is the delivery count: how many times this task has been leased to a
+// worker (1 on first delivery, 2+ on redelivery after a lost worker or a nack).
+// It is delivery-layer metadata -- the determinism guard compares the
+// ActivityCommand (name + args), never this, and it is NOT part of the command
+// or event, so it touches nothing in the replay model. It is for observability
+// (and lets a worker/log tell a redelivery from a first try).
 message ActivityTask {
   string task_id = 1;
   string workflow_id = 2;
   string activity_name = 3;
   string args_json = 4;
   string idempotency_key = 5;
+  int32 attempts = 6;
 }
 
 message PollActivityTaskResponse {
@@ -107,6 +115,20 @@ message ActivityFailure {
 
 message ReportActivityResultResponse {}
 
+// Release a task the worker cannot action right now: it does not have the
+// activity registered (a rolling deploy -- another worker may have it), or it
+// must decline for some other reason. The engine re-queues the task (makes it
+// visible to other pollers after retry_after_seconds) rather than waiting for
+// the lease to expire, so the parked engine Future is not held hostage. The
+// worker then keeps polling -- it does NOT die. This is the explicit nack that
+// complements the implicit one of a lost worker (lease expiry).
+message ReleaseActivityTaskRequest {
+  string task_id = 1;
+  double retry_after_seconds = 2;
+}
+
+message ReleaseActivityTaskResponse {}
+
 // ---------------------------------------------------------------------------
 // The service
 // ---------------------------------------------------------------------------
@@ -116,4 +138,5 @@ service Chronicle {
   rpc GetWorkflowResult(GetWorkflowResultRequest) returns (GetWorkflowResultResponse);
   rpc PollActivityTask(PollActivityTaskRequest) returns (PollActivityTaskResponse);
   rpc ReportActivityResult(ReportActivityResultRequest) returns (ReportActivityResultResponse);
+  rpc ReleaseActivityTask(ReleaseActivityTaskRequest) returns (ReleaseActivityTaskResponse);
 }

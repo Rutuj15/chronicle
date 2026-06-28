@@ -6,11 +6,14 @@ and proto types entirely: a caller starts a workflow by id + name + args and
 gets back a :class:`WorkflowResult` carrying a status enum, the deserialized
 result, and structured error fields. No proto type leaks into the SDK API.
 
-In 3b ``get_result`` blocks until the workflow reaches a terminal state, so a
-result is always ``COMPLETED`` or ``FAILED``; the ``RUNNING`` case (a long-poll
-timeout returning early) lands with leasing in 3c.
+``get_result`` long-polls: the Engine reports ``RUNNING`` when its server-side
+window elapses without a terminal state, and the Client re-calls until the
+workflow finishes (or its own budget runs out, in which case it returns the last
+``RUNNING``). So a result may be ``COMPLETED``, ``FAILED``, or ``RUNNING`` (the
+last only if the caller's ``timeout`` elapsed mid-flight).
 """
 
+import asyncio
 import json
 from dataclasses import dataclass
 from enum import Enum
@@ -84,18 +87,41 @@ class Client:
         *,
         timeout: float | None = None,
     ) -> WorkflowResult:
-        """Block until ``workflow_id`` finishes, then return its outcome.
+        """Long-poll ``workflow_id`` until it finishes, then return its outcome.
 
-        ``timeout`` caps the wait (a gRPC deadline); the default ``None`` waits
-        until the Engine reports a terminal state. The Engine's
-        ``GetWorkflowResult`` blocks server-side until the workflow is done, so in
-        3b the result is always ``COMPLETED`` or ``FAILED``.
+        The Engine long-polls server-side up to its window, returning ``RUNNING``
+        if the workflow hasn't finished; this re-calls until a terminal state or
+        the overall ``timeout`` budget elapses (then the last ``RUNNING`` is
+        returned, so the caller may observe an in-flight workflow without raising).
+        ``timeout`` caps the TOTAL wait across re-polls (``None`` = wait
+        indefinitely); each gRPC call's deadline is the budget remaining.
         """
-        response = await self._stub.GetWorkflowResult(
-            pb.GetWorkflowResultRequest(workflow_id=workflow_id),
-            timeout=timeout,
-        )
-        return _from_response(response)
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
+        while True:
+            remaining = None if deadline is None else deadline - loop.time()
+            if remaining is not None and remaining <= 0:
+                # Budget elapsed mid-flight: surface RUNNING rather than raise --
+                # the caller asked to observe, not to enforce a hard deadline.
+                return WorkflowResult(status=WorkflowStatus.RUNNING)
+            try:
+                response = await self._stub.GetWorkflowResult(
+                    pb.GetWorkflowResultRequest(workflow_id=workflow_id),
+                    timeout=remaining,
+                )
+            except grpc.aio.AioRpcError as exc:
+                # The observe call hit its gRPC deadline: the workflow is still
+                # running. Re-poll if budget remains, else (next iteration) return
+                # RUNNING. This absorbs the boundary race where the remaining
+                # budget slips under the server's long-poll window, so a tight
+                # client timeout surfaces RUNNING instead of an error.
+                if exc.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
+                    continue
+                raise
+            result = _from_response(response)
+            if result.status is not WorkflowStatus.RUNNING:
+                return result
+            # Server's long-poll window elapsed without a terminal state; re-poll.
 
 
 def _from_response(response: pb.GetWorkflowResultResponse) -> WorkflowResult:

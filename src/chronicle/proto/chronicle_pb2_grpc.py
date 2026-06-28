@@ -58,6 +58,11 @@ class ChronicleStub:
                 request_serializer=chronicle_dot_proto_dot_chronicle__pb2.ReportActivityResultRequest.SerializeToString,
                 response_deserializer=chronicle_dot_proto_dot_chronicle__pb2.ReportActivityResultResponse.FromString,
                 _registered_method=True)
+        self.ReleaseActivityTask = channel.unary_unary(
+                '/chronicle.Chronicle/ReleaseActivityTask',
+                request_serializer=chronicle_dot_proto_dot_chronicle__pb2.ReleaseActivityTaskRequest.SerializeToString,
+                response_deserializer=chronicle_dot_proto_dot_chronicle__pb2.ReleaseActivityTaskResponse.FromString,
+                _registered_method=True)
 
 
 class ChronicleServicer:
@@ -91,6 +96,12 @@ class ChronicleServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ReleaseActivityTask(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_ChronicleServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -113,6 +124,11 @@ def add_ChronicleServicer_to_server(servicer, server):
                     servicer.ReportActivityResult,
                     request_deserializer=chronicle_dot_proto_dot_chronicle__pb2.ReportActivityResultRequest.FromString,
                     response_serializer=chronicle_dot_proto_dot_chronicle__pb2.ReportActivityResultResponse.SerializeToString,
+            ),
+            'ReleaseActivityTask': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReleaseActivityTask,
+                    request_deserializer=chronicle_dot_proto_dot_chronicle__pb2.ReleaseActivityTaskRequest.FromString,
+                    response_serializer=chronicle_dot_proto_dot_chronicle__pb2.ReleaseActivityTaskResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -227,6 +243,33 @@ class Chronicle:
             '/chronicle.Chronicle/ReportActivityResult',
             chronicle_dot_proto_dot_chronicle__pb2.ReportActivityResultRequest.SerializeToString,
             chronicle_dot_proto_dot_chronicle__pb2.ReportActivityResultResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReleaseActivityTask(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/chronicle.Chronicle/ReleaseActivityTask',
+            chronicle_dot_proto_dot_chronicle__pb2.ReleaseActivityTaskRequest.SerializeToString,
+            chronicle_dot_proto_dot_chronicle__pb2.ReleaseActivityTaskResponse.FromString,
             options,
             channel_credentials,
             insecure,

@@ -1,11 +1,11 @@
 """End-to-end tests for the distributed Engine / Worker / Client.
 
 These run a *real* ``grpc.aio`` server on a free loopback port with the Worker and
-Client as async tasks in the same event loop -- not separate processes (that is
-3c). The :func:`_cluster` context manager stands up the whole stack (durable
-``SqliteTaskQueue`` on a temp DB, ``Engine`` servicer, ``run_worker`` task,
-``Client``) and tears it back down, so each test reads as: start a workflow,
-observe its result over gRPC.
+Client as async tasks in the same event loop. (Real separate processes are the
+3c demo in ``examples/``; these tests pin the behaviour, cheaply and
+deterministically, in one loop.) :func:`_server` stands up Engine + Client and
+hands back a worker factory so a test can start workers (and kill them)
+when it chooses; :func:`_cluster` is the single-worker convenience over it.
 
 What these pin:
 * a workflow's activities run on the Worker and the Client observes the result;
@@ -14,12 +14,19 @@ What these pin:
 * retry/timeout/idempotency policy runs on the Worker (reusing ``_run_activity``);
 * the engine-minted idempotency key ``"{workflow_id}:{seq}"`` is delivered to an
   idempotent activity and withheld from a non-idempotent one;
-* a multi-activity workflow composes results across several Worker round-trips.
+* a multi-activity workflow composes results across several Worker round-trips;
+* task leasing -- a worker that claims a task and dies does not wedge the
+  workflow: its lease expires, the task redelivers, another worker completes it;
+* a missing activity on one worker is nacked (released) and redelivered to one
+  that has it, rather than bricking the worker or wedging the workflow;
+* GetWorkflowResult long-polls -- an in-flight workflow surfaces as RUNNING,
+  then COMPLETED once it finishes.
 """
 
 import asyncio
 import contextlib
-from collections.abc import AsyncIterator, Mapping
+import time
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 
 import aiosqlite
@@ -28,10 +35,99 @@ import grpc.aio
 from chronicle.client import Client, WorkflowStatus
 from chronicle.engine import Engine, WorkflowFn
 from chronicle.proto import chronicle_pb2_grpc as pb_grpc
-from chronicle.runtime import ActivityRegistry, ActivitySpec, AsyncSleeper, RetryPolicy
+from chronicle.runtime import (
+    ActivityRegistry,
+    ActivitySpec,
+    AsyncSleeper,
+    Clock,
+    RetryPolicy,
+)
 from chronicle.task_queue import SqliteTaskQueue
 from chronicle.worker import run_worker
 from conftest import noop_sleep
+
+# A factory a test calls to start a worker on the shared channel; returns the
+# worker task so the test can await/cancel it. _server owns teardown.
+WorkerStarter = Callable[[ActivityRegistry], Awaitable[asyncio.Task[None]]]
+
+
+class _MonotonicFake:
+    """A controllable stand-in for ``time.monotonic``, for deterministic leases.
+
+    The task queue reads this clock for lease deadlines; advancing it past the
+    lease makes an in-flight task reappear instantly, with no real wall-clock
+    waiting.
+    """
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.t = start
+
+    def __call__(self) -> float:
+        return self.t
+
+    def advance(self, dt: float) -> None:
+        self.t += dt
+
+
+@asynccontextmanager
+async def _server(
+    workflows: Mapping[str, WorkflowFn],
+    *,
+    db_path: str,
+    poll_timeout: float = 0.2,
+    result_timeout: float = 5.0,
+    lease_seconds: float = 30.0,
+    now: Clock = time.monotonic,
+    worker_sleep: AsyncSleeper = asyncio.sleep,
+    nack_retry_after: float = 0.0,
+) -> AsyncIterator[tuple[Client, WorkerStarter]]:
+    """Stand up Engine + Client (no workers); yield the client and a worker factory.
+
+    Lets a test start workers when it chooses -- and cancel one mid-flight -- the
+    leverage the leasing and missing-activity tests need. ``now`` is the queue's
+    lease clock (default real monotonic; pass a :class:`_MonotonicFake` to expire
+    a lease instantly). Tears the stack down on exit (every started worker,
+    engine, server, channel, queue connection).
+    """
+    conn = await aiosqlite.connect(db_path)
+    queue = SqliteTaskQueue(conn, lease_seconds=lease_seconds, now=now)
+    await queue.start()
+    engine = Engine(
+        workflows, queue, poll_timeout=poll_timeout, result_timeout=result_timeout
+    )
+
+    server = grpc.aio.server()
+    pb_grpc.add_ChronicleServicer_to_server(engine, server)
+    port = server.add_insecure_port("127.0.0.1:0")
+    await server.start()
+
+    channel = grpc.aio.insecure_channel(f"127.0.0.1:{port}")
+    worker_tasks: list[asyncio.Task[None]] = []
+
+    async def make_worker(registry: ActivityRegistry) -> asyncio.Task[None]:
+        task = asyncio.create_task(
+            run_worker(
+                pb_grpc.ChronicleStub(channel),
+                registry,
+                sleep=worker_sleep,
+                nack_retry_after=nack_retry_after,
+            )
+        )
+        worker_tasks.append(task)
+        return task
+
+    try:
+        yield Client(channel), make_worker
+    finally:
+        for task in worker_tasks:
+            task.cancel()
+        for task in worker_tasks:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        await engine.stop()
+        await server.stop(grace=None)
+        await channel.close()
+        await conn.close()
 
 
 @asynccontextmanager
@@ -42,38 +138,27 @@ async def _cluster(
     db_path: str,
     worker_sleep: AsyncSleeper = asyncio.sleep,
     poll_timeout: float = 0.2,
+    result_timeout: float = 5.0,
+    lease_seconds: float = 30.0,
+    now: Clock = time.monotonic,
 ) -> AsyncIterator[Client]:
-    """Stand up Engine + Worker + Client on one loop; yield the Client.
+    """Stand up Engine + one Worker + Client on one loop; yield the Client.
 
-    Tears everything down in reverse on exit: cancel the Worker, stop the Engine's
-    live workflows, stop the server, close the channel, close the task-queue
-    connection. ``db_path`` should be a pytest ``tmp_path`` so SQLite's files are
+    A convenience over :func:`_server` for tests that want a single worker for the
+    whole run. ``db_path`` should be a pytest ``tmp_path`` so SQLite's files are
     cleaned up automatically.
     """
-    conn = await aiosqlite.connect(db_path)
-    queue = SqliteTaskQueue(conn)
-    await queue.start()
-    engine = Engine(workflows, queue, poll_timeout=poll_timeout)
-
-    server = grpc.aio.server()
-    pb_grpc.add_ChronicleServicer_to_server(engine, server)
-    port = server.add_insecure_port("127.0.0.1:0")
-    await server.start()
-
-    channel = grpc.aio.insecure_channel(f"127.0.0.1:{port}")
-    worker_task = asyncio.create_task(
-        run_worker(pb_grpc.ChronicleStub(channel), activities, sleep=worker_sleep)
-    )
-    try:
-        yield Client(channel)
-    finally:
-        worker_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await worker_task
-        await engine.stop()
-        await server.stop(grace=None)
-        await channel.close()
-        await conn.close()
+    async with _server(
+        workflows,
+        db_path=db_path,
+        poll_timeout=poll_timeout,
+        result_timeout=result_timeout,
+        lease_seconds=lease_seconds,
+        now=now,
+        worker_sleep=worker_sleep,
+    ) as (client, make_worker):
+        await make_worker(activities)
+        yield client
 
 
 async def test_workflow_runs_activity_on_worker_and_returns_result(tmp_path) -> None:
@@ -203,3 +288,114 @@ async def test_multi_activity_workflow_composes_results(tmp_path) -> None:
 
     assert result.status is WorkflowStatus.COMPLETED
     assert result.result == [2, 3]
+
+
+async def test_lost_worker_redelivered_to_another(tmp_path) -> None:
+    # The core 3c property: a worker that claims a task and then dies (never
+    # reports) does not wedge the workflow. Its lease expires, the task is
+    # redelivered, and a second worker runs it to completion -- at-least-once
+    # delivery across a lost worker.
+    started = asyncio.Event()  # set once a worker has claimed and entered the activity
+    proceed = asyncio.Event()  # the activity blocks on this until the test allows it
+    runs = 0
+
+    async def sticky() -> str:
+        nonlocal runs
+        runs += 1
+        started.set()
+        await proceed.wait()
+        return "recovered"
+
+    async def sticky_workflow(ctx) -> str:
+        return await ctx.activity("sticky")
+
+    clock = _MonotonicFake()
+    async with _server(
+        {"sticky": sticky_workflow},
+        db_path=str(tmp_path / "q.db"),
+        lease_seconds=10.0,
+        now=clock,
+    ) as (client, make_worker):
+        worker1 = await make_worker({"sticky": sticky})
+        await client.start_workflow("wf", "sticky")
+        await started.wait()  # worker1 has claimed the task and is stuck in it
+
+        worker1.cancel()  # worker1 dies mid-activity -- it never reports
+        with contextlib.suppress(asyncio.CancelledError):
+            await worker1
+
+        clock.advance(20.0)  # past the lease -> the task reappears for another
+        proceed.set()  # let the redelivered run complete
+        await make_worker({"sticky": sticky})  # a fresh worker picks it up
+
+        result = await client.get_result("wf", timeout=5.0)
+
+    assert result.status is WorkflowStatus.COMPLETED
+    assert result.result == "recovered"
+    # Ran once on the lost worker and once on the redelivering one -- the
+    # activity executed twice (at-least-once), which is exactly what idempotency
+    # keys exist to make safe.
+    assert runs == 2
+
+
+async def test_missing_activity_redelivered_to_a_worker_that_has_it(tmp_path) -> None:
+    # A worker that lacks an activity (a rolling deploy not yet rolled here) nacks
+    # the task rather than running it or dying; another worker that has it picks
+    # up the redelivery and completes.
+    ran = 0
+
+    async def deployed(arg: str) -> str:
+        nonlocal ran
+        ran += 1
+        return f"ran:{arg}"
+
+    async def unrelated() -> str:
+        return "x"
+
+    async def deploy_workflow(ctx, arg: str) -> str:
+        return await ctx.activity("deployed", arg)
+
+    async with _server(
+        {"deploy": deploy_workflow}, db_path=str(tmp_path / "q.db")
+    ) as (client, make_worker):
+        # worker1 is missing "deployed" (the new code has not rolled here yet).
+        await make_worker({"unrelated": unrelated})
+        await client.start_workflow("wf", "deploy", "payload")
+        # Let worker1 claim + nack at least once before the capable worker joins,
+        # so the nack path is actually exercised (not just worker2 winning first).
+        await asyncio.sleep(0.05)
+        await make_worker({"deployed": deployed})  # the rolled worker, has "deployed"
+        result = await client.get_result("wf", timeout=5.0)
+
+    assert result.status is WorkflowStatus.COMPLETED
+    assert result.result == "ran:payload"
+    assert ran == 1  # ran exactly once, on the worker that had the activity
+
+
+async def test_running_returned_while_workflow_is_in_flight(tmp_path) -> None:
+    # GetWorkflowResult long-polls: while the workflow is blocked, a short client
+    # budget observes RUNNING; once it finishes, COMPLETED.
+    proceed = asyncio.Event()
+
+    async def slow() -> str:
+        await proceed.wait()
+        return "done"
+
+    async def slow_workflow(ctx) -> str:
+        return await ctx.activity("slow")
+
+    async with _cluster(
+        {"slow": slow_workflow},
+        {"slow": slow},
+        db_path=str(tmp_path / "q.db"),
+        result_timeout=0.1,  # short server long-poll window -> RUNNING returns fast
+    ) as client:
+        await client.start_workflow("wf", "slow")
+        running = await client.get_result("wf", timeout=0.5)
+        assert running.status is WorkflowStatus.RUNNING
+
+        proceed.set()
+        done = await client.get_result("wf", timeout=5.0)
+
+    assert done.status is WorkflowStatus.COMPLETED
+    assert done.result == "done"
