@@ -21,8 +21,8 @@ import time
 from collections.abc import Callable, Coroutine
 from typing import Any
 
-from chronicle.events import JsonValue
-from chronicle.runtime import (
+from chronicle.core.events import JsonValue
+from chronicle.core.runtime import (
     ActivityExecutor,
     ActivityRegistry,
     AsyncSleeper,

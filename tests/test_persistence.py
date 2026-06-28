@@ -18,10 +18,10 @@ from pathlib import Path
 
 import aiosqlite
 
-from chronicle.context import WorkflowContext
-from chronicle.events import ActivityCommand, Completed, JsonValue
-from chronicle.history import SqliteEventLog
-from chronicle.runtime import ActivityRegistry, run
+from chronicle.core.context import WorkflowContext
+from chronicle.core.events import ActivityCommand, Completed, JsonValue
+from chronicle.core.history import SqliteEventLog
+from chronicle.core.runtime import ActivityRegistry, run
 from conftest import FakeClock, noop_sleep
 
 

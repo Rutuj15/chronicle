@@ -10,8 +10,8 @@ import json
 
 import pytest
 
-from chronicle.context import WorkflowContext
-from chronicle.events import (
+from chronicle.core.context import WorkflowContext
+from chronicle.core.events import (
     ActivityCommand,
     Completed,
     Event,
@@ -21,9 +21,9 @@ from chronicle.events import (
     SleepCommand,
     TimerFired,
 )
-from chronicle.history import InMemoryEventLog
-from chronicle.runtime import ActivityRegistry
-from chronicle.serialization import dump_event, load_event
+from chronicle.core.history import InMemoryEventLog
+from chronicle.core.runtime import ActivityRegistry
+from chronicle.core.serialization import dump_event, load_event
 from conftest import run_sync
 
 # --- the union: every variant round-trips ------------------------------------
@@ -154,9 +154,7 @@ def test_serialized_log_replays_with_no_activity_re_execution() -> None:
 
     # Simulate the durable store: every event leaves the process as bytes and
     # comes back as a reconstructed object.
-    rebuilt = InMemoryEventLog(
-        load_event(dump_event(original[i])) for i in range(len(original))
-    )
+    rebuilt = InMemoryEventLog(load_event(dump_event(original[i])) for i in range(len(original)))
 
     result = run_sync(two_step, ("world",), rebuilt, registry)
 

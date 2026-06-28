@@ -13,10 +13,10 @@ blocking. That is exactly what makes the remainder math assertable.
 
 import pytest
 
-from chronicle.context import WorkflowContext
-from chronicle.events import JsonValue, SleepCommand, TimerFired
-from chronicle.history import InMemoryEventLog
-from chronicle.runtime import ActivityRegistry, NonDeterminismError
+from chronicle.core.context import WorkflowContext
+from chronicle.core.events import JsonValue, SleepCommand, TimerFired
+from chronicle.core.history import InMemoryEventLog
+from chronicle.core.runtime import ActivityRegistry, NonDeterminismError
 from conftest import FakeClock, noop_sleep, run_sync
 
 # --- the workflows under test ------------------------------------------------

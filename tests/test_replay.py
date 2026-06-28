@@ -9,10 +9,10 @@ directions, the clock as a recorded command, and honest failure handling.
 
 import pytest
 
-from chronicle.context import WorkflowContext
-from chronicle.events import Failed, JsonValue
-from chronicle.history import InMemoryEventLog
-from chronicle.runtime import ActivityFailedError, ActivityRegistry, NonDeterminismError
+from chronicle.core.context import WorkflowContext
+from chronicle.core.events import Failed, JsonValue
+from chronicle.core.history import InMemoryEventLog
+from chronicle.core.runtime import ActivityFailedError, ActivityRegistry, NonDeterminismError
 from conftest import run_sync
 
 # --- Shared test inputs ------------------------------------------------------

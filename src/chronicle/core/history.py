@@ -29,8 +29,8 @@ from typing import Protocol, cast
 
 import aiosqlite
 
-from .events import Event
-from .serialization import dump_event, load_event
+from chronicle.core.events import Event
+from chronicle.core.serialization import dump_event, load_event
 
 
 class EventLog(Protocol):

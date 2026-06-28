@@ -33,17 +33,17 @@ import aiosqlite
 import grpc.aio
 
 from chronicle.client import Client, WorkflowStatus
-from chronicle.engine import Engine, WorkflowFn
-from chronicle.proto import chronicle_pb2 as pb
-from chronicle.proto import chronicle_pb2_grpc as pb_grpc
-from chronicle.runtime import (
+from chronicle.core.runtime import (
     ActivityRegistry,
     ActivitySpec,
     AsyncSleeper,
     Clock,
     RetryPolicy,
 )
-from chronicle.task_queue import SqliteTaskQueue
+from chronicle.proto import chronicle_pb2 as pb
+from chronicle.proto import chronicle_pb2_grpc as pb_grpc
+from chronicle.server.engine import Engine, WorkflowFn
+from chronicle.server.task_queue import SqliteTaskQueue
 from chronicle.worker import _rpc, run_worker
 from conftest import noop_sleep
 
@@ -447,9 +447,10 @@ async def test_missing_activity_redelivered_to_a_worker_that_has_it(tmp_path) ->
     async def deploy_workflow(ctx, arg: str) -> str:
         return await ctx.activity("deployed", arg)
 
-    async with _server(
-        {"deploy": deploy_workflow}, db_path=str(tmp_path / "q.db")
-    ) as (client, make_worker):
+    async with _server({"deploy": deploy_workflow}, db_path=str(tmp_path / "q.db")) as (
+        client,
+        make_worker,
+    ):
         # worker1 is missing "deployed" (the new code has not rolled here yet).
         await make_worker({"unrelated": unrelated})
         await client.start_workflow("wf", "deploy", "payload")
@@ -550,9 +551,7 @@ async def test_worker_rides_through_transient_unavailable() -> None:
         seen.append(x)
         return f"hi {x}"
 
-    worker = asyncio.create_task(
-        run_worker(stub, {"hi": hi}, sleep=noop_sleep, rpc_backoff=0.0)
-    )
+    worker = asyncio.create_task(run_worker(stub, {"hi": hi}, sleep=noop_sleep, rpc_backoff=0.0))
     try:
         # Two UNAVAILABLE polls, then success: claim, run, report. Poll for the
         # report rather than sleep a fixed beat (robust on a slow box).

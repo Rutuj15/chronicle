@@ -30,10 +30,10 @@ from pathlib import Path
 
 import aiosqlite
 
-from chronicle.context import WorkflowContext
-from chronicle.events import JsonValue
-from chronicle.history import SqliteEventLog
-from chronicle.runtime import run
+from chronicle.core.context import WorkflowContext
+from chronicle.core.events import JsonValue
+from chronicle.core.history import SqliteEventLog
+from chronicle.core.runtime import run
 
 WORKFLOW_ID = "demo"
 DURATION = 6.0  # how long the workflow's timer runs (seconds)

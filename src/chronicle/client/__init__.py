@@ -22,9 +22,9 @@ from enum import Enum
 
 import grpc.aio
 
-from .events import JsonValue
-from .proto import chronicle_pb2 as pb
-from .proto import chronicle_pb2_grpc as pb_grpc
+from chronicle.core.events import JsonValue
+from chronicle.proto import chronicle_pb2 as pb
+from chronicle.proto import chronicle_pb2_grpc as pb_grpc
 
 
 class WorkflowStatus(Enum):

@@ -9,11 +9,11 @@ system) can dedup. These tests pin that contract.
 
 import pytest
 
-from chronicle.context import WorkflowContext
-from chronicle.events import JsonValue
-from chronicle.history import InMemoryEventLog
-from chronicle.retry import RetryPolicy, idempotency_key
-from chronicle.runtime import ActivitySpec
+from chronicle.core.context import WorkflowContext
+from chronicle.core.events import JsonValue
+from chronicle.core.history import InMemoryEventLog
+from chronicle.core.retry import RetryPolicy, idempotency_key
+from chronicle.core.runtime import ActivitySpec
 from conftest import noop_sleep, run_sync
 
 

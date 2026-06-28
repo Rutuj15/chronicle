@@ -12,9 +12,9 @@ untouched, because that is a setup error, not an activity outcome.
 
 import pytest
 
-from chronicle.context import WorkflowContext
-from chronicle.events import JsonValue
-from chronicle.history import InMemoryEventLog
+from chronicle.core.context import WorkflowContext
+from chronicle.core.events import JsonValue
+from chronicle.core.history import InMemoryEventLog
 from conftest import run_sync
 
 

@@ -27,8 +27,8 @@ from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
 
-from .context import WorkflowContext
-from .events import (
+from chronicle.core.context import WorkflowContext
+from chronicle.core.events import (
     ActivityCommand,
     Command,
     Completed,
@@ -39,8 +39,8 @@ from .events import (
     SleepCommand,
     TimerFired,
 )
-from .history import EventLog
-from .retry import RetryPolicy, idempotency_key
+from chronicle.core.history import EventLog
+from chronicle.core.retry import RetryPolicy, idempotency_key
 
 # An activity is plain side-effectful code: takes JSON args, returns a JSON
 # value. It is an ``async def`` so the runtime can ``await`` it -- which is what
@@ -282,7 +282,7 @@ def _mint_key(spec: ActivitySpec, name: str, workflow_id: str | None, seq: int) 
     The key is ``"{workflow_id}:{seq}"`` -- stable across the original run, every
     retry, and crash-replay-reexecution, because ``workflow_id`` is fixed and
     deterministic replay lands every command at the same ``seq``
-    (:func:`~chronicle.retry.idempotency_key`). It is computed, never stored, so
+    (:func:`~chronicle.core.retry.idempotency_key`). It is computed, never stored, so
     it costs nothing in the log. An idempotent activity
     needs a workflow_id to mint a meaningful key; a non-idempotent one never
     mints one, so workflow_id stays optional for the rest of the engine.
@@ -467,7 +467,7 @@ async def run[R](
     ``workflow_id`` identifies this execution. It is optional in general but
     required the moment any registered activity is ``idempotent``: the runtime
     mints each such activity a stable key ``"{workflow_id}:{seq}"`` (see
-    :func:`~chronicle.retry.idempotency_key`) so it can dedup across the
+    :func:`~chronicle.core.retry.idempotency_key`) so it can dedup across the
     at-least-once boundary. ``seq`` is the command's position in the log -- the
     same on every run, by deterministic replay.
 

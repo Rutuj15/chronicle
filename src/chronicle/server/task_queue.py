@@ -60,7 +60,7 @@ from typing import Protocol
 
 import aiosqlite
 
-from .proto.chronicle_pb2 import ActivityTask
+from chronicle.proto.chronicle_pb2 import ActivityTask
 
 # The clock the queue reads for lease deadlines. Monotonic (not wall-clock):
 # lease *durations* are relative, so immunity to a wall-clock jump matters more
@@ -117,7 +117,7 @@ class SqliteTaskQueue:
     The connection is *injected and owned by the caller*: pass an open
     :class:`aiosqlite.Connection`, then :meth:`start` it once to set the
     durability pragmas and ensure the schema. Close the connection yourself when
-    done. This mirrors :class:`chronicle.history.SqliteEventLog` -- the other
+    done. This mirrors :class:`chronicle.core.history.SqliteEventLog` -- the other
     SQLite seam -- and keeps the queue decoupled from how the connection (and
     its DB path) was opened.
 

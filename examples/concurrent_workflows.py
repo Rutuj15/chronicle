@@ -20,10 +20,10 @@ build on: an activity that blocks on network IO will no longer freeze the engine
 import asyncio
 import time
 
-from chronicle.context import WorkflowContext
-from chronicle.events import JsonValue
-from chronicle.history import InMemoryEventLog
-from chronicle.runtime import ActivityRegistry, run
+from chronicle.core.context import WorkflowContext
+from chronicle.core.events import JsonValue
+from chronicle.core.history import InMemoryEventLog
+from chronicle.core.runtime import ActivityRegistry, run
 
 SLOW_FOR = 2.0  # seconds each workflow's activity spends "doing work"
 

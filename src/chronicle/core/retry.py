@@ -6,7 +6,7 @@ before its failure is recorded, and how long to wait between attempts.
 
 The policy is *execution-time* machinery, not part of the workflow's
 deterministic history. It lives next to the activity at registration
-(:class:`~chronicle.runtime.ActivitySpec`) rather than inside the
+(:class:`~chronicle.core.runtime.ActivitySpec`) rather than inside the
 ``ActivityCommand`` the workflow yields. That separation is deliberate: the
 event log records *what happened* (a ``Completed`` or ``Failed`` outcome); the
 policy governs *how hard the runtime tried* to get there. On replay the outcome

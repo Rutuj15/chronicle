@@ -43,10 +43,10 @@ import aiosqlite
 import grpc.aio
 
 from chronicle.client import Client
-from chronicle.engine import Engine
+from chronicle.core.runtime import ActivitySpec
 from chronicle.proto import chronicle_pb2_grpc as pb_grpc
-from chronicle.runtime import ActivitySpec
-from chronicle.task_queue import SqliteTaskQueue
+from chronicle.server.engine import Engine
+from chronicle.server.task_queue import SqliteTaskQueue
 from chronicle.worker import run_worker
 
 # --- The workflow + activity the demo runs --------------------------------
@@ -90,8 +90,7 @@ async def charge(amount: int, *, idempotency_key: str) -> str:
         print(f"    [{WORKER_ID}] dedup   {idempotency_key} -> {cached}", flush=True)
         return cached
     print(
-        f"    [{WORKER_ID}] charge start: {idempotency_key} amount={amount}"
-        f" (~{ACTIVITY_SECONDS}s)",
+        f"    [{WORKER_ID}] charge start: {idempotency_key} amount={amount} (~{ACTIVITY_SECONDS}s)",
         flush=True,
     )
     await asyncio.sleep(ACTIVITY_SECONDS)
@@ -122,17 +121,14 @@ async def run_engine(addr: str, db_path: str) -> None:
     # The Engine's durable state (event log + workflow metadata) in a sibling
     # file; reopened on restart, a fresh Engine recovers from it.
     event_conn = await aiosqlite.connect(db_path + ".events")
-    engine = Engine(
-        {"recover": recover_workflow}, queue, event_conn, poll_timeout=POLL_TIMEOUT
-    )
+    engine = Engine({"recover": recover_workflow}, queue, event_conn, poll_timeout=POLL_TIMEOUT)
     await engine.start()  # recover workflows in flight when the Engine last died
     server = grpc.aio.server()
     pb_grpc.add_ChronicleServicer_to_server(engine, server)
     server.add_insecure_port(addr)
     await server.start()
     print(
-        f"[engine] serving on {addr} "
-        f"(lease={LEASE_SECONDS}s, poll={POLL_TIMEOUT}s, db={db_path})",
+        f"[engine] serving on {addr} (lease={LEASE_SECONDS}s, poll={POLL_TIMEOUT}s, db={db_path})",
         flush=True,
     )
     await asyncio.Event().wait()  # serve until the process is killed
@@ -220,9 +216,7 @@ async def _wait_for_port_down(addr: str, *, timeout: float = 5.0) -> None:
     raise TimeoutError(f"engine on {addr} never went down")
 
 
-async def _relay_until(
-    stream: asyncio.StreamReader, marker: str, *, timeout: float = 10.0
-) -> bool:
+async def _relay_until(stream: asyncio.StreamReader, marker: str, *, timeout: float = 10.0) -> bool:
     """Print each line from ``stream`` until one contains ``marker`` (then stop).
 
     Used to watch worker-1's output for proof it has claimed and entered an
@@ -233,9 +227,7 @@ async def _relay_until(
     deadline = loop.time() + timeout
     while loop.time() < deadline:
         try:
-            line = await asyncio.wait_for(
-                stream.readline(), timeout=deadline - loop.time()
-            )
+            line = await asyncio.wait_for(stream.readline(), timeout=deadline - loop.time())
         except TimeoutError:
             return False
         if not line:
@@ -256,9 +248,7 @@ async def _drain(stream: asyncio.StreamReader) -> None:
         print(line.decode().rstrip(), flush=True)
 
 
-async def _terminate(
-    proc: asyncio.subprocess.Process | None, timeout: float = 3.0
-) -> None:
+async def _terminate(proc: asyncio.subprocess.Process | None, timeout: float = 3.0) -> None:
     """Terminate a subprocess cleanly (escalate to kill if it won't stop)."""
     if proc is None or proc.returncode is not None:
         return
@@ -300,7 +290,12 @@ async def run_demo() -> None:
         # so its in-memory dedup persists across it -- what makes the at-least-once
         # re-execution an exactly-once effect below.
         worker = await asyncio.create_subprocess_exec(
-            *py, "worker", "--addr", addr, "--id", "worker-1",
+            *py,
+            "worker",
+            "--addr",
+            addr,
+            "--id",
+            "worker-1",
             stdout=asyncio.subprocess.PIPE,
         )
         assert worker.stdout is not None
@@ -318,9 +313,7 @@ async def run_demo() -> None:
         # Observe results from BEFORE the crash: these long-polls span the Engine's
         # death+restart, riding through via retry/backoff (UNAVAILABLE).
         poll_tasks.extend(
-            asyncio.create_task(
-                client.get_result(w, timeout=60.0, rpc_backoff=RPC_BACKOFF)
-            )
+            asyncio.create_task(client.get_result(w, timeout=60.0, rpc_backoff=RPC_BACKOFF))
             for w in wf_ids
         )
 

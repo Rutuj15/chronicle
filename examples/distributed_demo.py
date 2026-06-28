@@ -38,9 +38,9 @@ import grpc
 import grpc.aio
 
 from chronicle.client import Client
-from chronicle.engine import Engine
 from chronicle.proto import chronicle_pb2_grpc as pb_grpc
-from chronicle.task_queue import SqliteTaskQueue
+from chronicle.server.engine import Engine
+from chronicle.server.task_queue import SqliteTaskQueue
 from chronicle.worker import run_worker
 
 # --- The workflow + activity the demo runs --------------------------------
@@ -65,8 +65,7 @@ POLL_TIMEOUT = 0.3
 async def slow_charge(amount: int) -> str:
     """The demo activity: prints its worker, sleeps, returns a result."""
     print(
-        f"    [{WORKER_ID}] activity start: charge {amount}"
-        f" (~{ACTIVITY_SECONDS}s)",
+        f"    [{WORKER_ID}] activity start: charge {amount} (~{ACTIVITY_SECONDS}s)",
         flush=True,
     )
     await asyncio.sleep(ACTIVITY_SECONDS)
@@ -90,17 +89,14 @@ async def run_engine(addr: str, db_path: str) -> None:
     # The engine's durable state (event log + workflow metadata) in a sibling
     # file; reopened on restart, a fresh engine recovers in-flight workflows.
     event_conn = await aiosqlite.connect(db_path + ".events")
-    engine = Engine(
-        {"recover": recover_workflow}, queue, event_conn, poll_timeout=POLL_TIMEOUT
-    )
+    engine = Engine({"recover": recover_workflow}, queue, event_conn, poll_timeout=POLL_TIMEOUT)
     await engine.start()  # recover workflows in flight when the engine last died
     server = grpc.aio.server()
     pb_grpc.add_ChronicleServicer_to_server(engine, server)
     server.add_insecure_port(addr)
     await server.start()
     print(
-        f"[engine] serving on {addr} "
-        f"(lease={LEASE_SECONDS}s, poll={POLL_TIMEOUT}s, db={db_path})",
+        f"[engine] serving on {addr} (lease={LEASE_SECONDS}s, poll={POLL_TIMEOUT}s, db={db_path})",
         flush=True,
     )
     await asyncio.Event().wait()  # serve until the process is killed
@@ -157,9 +153,7 @@ async def _wait_for_engine(addr: str) -> None:
         await channel.close()
 
 
-async def _relay_until(
-    stream: asyncio.StreamReader, marker: str, *, timeout: float = 10.0
-) -> bool:
+async def _relay_until(stream: asyncio.StreamReader, marker: str, *, timeout: float = 10.0) -> bool:
     """Print each line from ``stream`` until one contains ``marker`` (then stop).
 
     Used to watch worker-1's output for proof it has claimed and started the
@@ -170,9 +164,7 @@ async def _relay_until(
     deadline = loop.time() + timeout
     while loop.time() < deadline:
         try:
-            line = await asyncio.wait_for(
-                stream.readline(), timeout=deadline - loop.time()
-            )
+            line = await asyncio.wait_for(stream.readline(), timeout=deadline - loop.time())
         except TimeoutError:
             return False
         if not line:
@@ -184,9 +176,7 @@ async def _relay_until(
     return False
 
 
-async def _terminate(
-    proc: asyncio.subprocess.Process | None, timeout: float = 3.0
-) -> None:
+async def _terminate(proc: asyncio.subprocess.Process | None, timeout: float = 3.0) -> None:
     """Terminate a subprocess cleanly (escalate to kill if it won't stop)."""
     if proc is None or proc.returncode is not None:
         return
@@ -211,9 +201,7 @@ async def run_demo() -> None:
     addr = f"127.0.0.1:{_free_port()}"
     py = [sys.executable, os.path.abspath(__file__)]
 
-    engine = await asyncio.create_subprocess_exec(
-        *py, "engine", "--addr", addr, "--db", db_path
-    )
+    engine = await asyncio.create_subprocess_exec(*py, "engine", "--addr", addr, "--db", db_path)
     worker1: asyncio.subprocess.Process | None = None
     worker2: asyncio.subprocess.Process | None = None
     try:
@@ -222,7 +210,12 @@ async def run_demo() -> None:
         # worker-1 is the only poller, so it grabs the task. Capture its stdout so
         # we can confirm it started the activity before we kill it.
         worker1 = await asyncio.create_subprocess_exec(
-            *py, "worker", "--addr", addr, "--id", "worker-1",
+            *py,
+            "worker",
+            "--addr",
+            addr,
+            "--id",
+            "worker-1",
             stdout=asyncio.subprocess.PIPE,
         )
         assert worker1.stdout is not None
@@ -231,16 +224,14 @@ async def run_demo() -> None:
         client = Client(channel)
         await client.start_workflow("demo-wf", "recover", 42)
         print(
-            "[demo] workflow started; worker-1 is the only poller, so it grabs "
-            "the task",
+            "[demo] workflow started; worker-1 is the only poller, so it grabs the task",
             flush=True,
         )
 
         if not await _relay_until(worker1.stdout, "activity start"):
             raise RuntimeError("worker-1 never started the activity")
         print(
-            "[demo] *** killing worker-1 mid-activity "
-            "(it holds the lease; it will NOT report) ***",
+            "[demo] *** killing worker-1 mid-activity (it holds the lease; it will NOT report) ***",
             flush=True,
         )
         await _terminate(worker1)

@@ -22,10 +22,10 @@ import aiosqlite
 import grpc.aio
 
 from chronicle.client import Client, WorkflowStatus
-from chronicle.engine import Engine, WorkflowFn
+from chronicle.core.runtime import ActivityRegistry, AsyncSleeper
 from chronicle.proto import chronicle_pb2_grpc as pb_grpc
-from chronicle.runtime import ActivityRegistry, AsyncSleeper
-from chronicle.task_queue import SqliteTaskQueue
+from chronicle.server.engine import Engine, WorkflowFn
+from chronicle.server.task_queue import SqliteTaskQueue
 from chronicle.worker import run_worker
 
 

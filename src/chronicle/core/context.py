@@ -8,7 +8,7 @@ Command out to the runtime's driver loop and resolves to the recorded result.
 
 from collections.abc import Generator
 
-from .events import ActivityCommand, Command, JsonValue, NowCommand, SleepCommand
+from chronicle.core.events import ActivityCommand, Command, JsonValue, NowCommand, SleepCommand
 
 
 class _CommandAwaitable:

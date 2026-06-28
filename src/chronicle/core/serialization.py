@@ -28,7 +28,7 @@ reject them.
 import json
 from typing import Any
 
-from .events import (
+from chronicle.core.events import (
     ActivityCommand,
     Command,
     Completed,

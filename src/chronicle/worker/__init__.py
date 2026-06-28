@@ -2,8 +2,8 @@
 
 A Worker owns only the activity code. It long-polls the Engine
 (``PollActivityTask``) for the next unit of work, runs it under its
-:class:`~chronicle.runtime.ActivitySpec` policy (retry / timeout / idempotency)
-via the *same* :func:`chronicle.runtime._run_activity` loop the in-process
+:class:`~chronicle.core.runtime.ActivitySpec` policy (retry / timeout / idempotency)
+via the *same* :func:`chronicle.core.runtime._run_activity` loop the in-process
 executor uses, and reports the terminal outcome back
 (``ReportActivityResult``) -- exactly one result OR one failure, never a stream
 of attempts, because retry happens here.
@@ -36,15 +36,15 @@ from collections.abc import Awaitable, Callable, Mapping
 
 import grpc.aio
 
-from .proto import chronicle_pb2 as pb
-from .proto import chronicle_pb2_grpc as pb_grpc
-from .runtime import (
+from chronicle.core.runtime import (
     ActivityRegistry,
     ActivitySpec,
     AsyncSleeper,
     _normalize_registry,
     _run_activity,
 )
+from chronicle.proto import chronicle_pb2 as pb
+from chronicle.proto import chronicle_pb2_grpc as pb_grpc
 
 # gRPC codes that mean "transient -- retry": UNAVAILABLE is what the channel
 # surfaces while the Engine is down or restarting (and on a network blip). Retrying
@@ -156,9 +156,7 @@ async def _run_one(
         release = pb.ReleaseActivityTaskRequest(
             task_id=task.task_id, retry_after_seconds=nack_retry_after
         )
-        await _rpc(
-            lambda: stub.ReleaseActivityTask(release), sleep=sleep, backoff=rpc_backoff
-        )
+        await _rpc(lambda: stub.ReleaseActivityTask(release), sleep=sleep, backoff=rpc_backoff)
         return
     spec = specs[task.activity_name]
     # The Engine always sends the key; inject it only if this activity is
@@ -176,20 +174,12 @@ async def _run_one(
         # once the clause exits), then hand the ready request to ``_rpc``.
         report = pb.ReportActivityResultRequest(
             task_id=task.task_id,
-            failure=pb.ActivityFailure(
-                error_type=type(exc).__name__, error_message=str(exc)
-            ),
+            failure=pb.ActivityFailure(error_type=type(exc).__name__, error_message=str(exc)),
         )
-        await _rpc(
-            lambda: stub.ReportActivityResult(report), sleep=sleep, backoff=rpc_backoff
-        )
+        await _rpc(lambda: stub.ReportActivityResult(report), sleep=sleep, backoff=rpc_backoff)
         return
-    report = pb.ReportActivityResultRequest(
-        task_id=task.task_id, result_json=json.dumps(result)
-    )
-    await _rpc(
-        lambda: stub.ReportActivityResult(report), sleep=sleep, backoff=rpc_backoff
-    )
+    report = pb.ReportActivityResultRequest(task_id=task.task_id, result_json=json.dumps(result))
+    await _rpc(lambda: stub.ReportActivityResult(report), sleep=sleep, backoff=rpc_backoff)
 
 
 __all__ = ["run_worker"]

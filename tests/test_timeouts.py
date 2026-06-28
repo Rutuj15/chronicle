@@ -16,11 +16,11 @@ import asyncio
 
 import pytest
 
-from chronicle.context import WorkflowContext
-from chronicle.events import Completed, Failed, JsonValue
-from chronicle.history import InMemoryEventLog
-from chronicle.retry import RetryPolicy
-from chronicle.runtime import ActivityFailedError, ActivitySpec
+from chronicle.core.context import WorkflowContext
+from chronicle.core.events import Completed, Failed, JsonValue
+from chronicle.core.history import InMemoryEventLog
+from chronicle.core.retry import RetryPolicy
+from chronicle.core.runtime import ActivityFailedError, ActivitySpec
 from conftest import run_sync
 
 # A budget comfortably larger than any activity here, and an overrun ten times

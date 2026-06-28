@@ -1,7 +1,7 @@
 """The distributed Engine: workflow replay + coordination over gRPC.
 
 The Engine is the durable "brain": it owns the workflow registry, drives each
-workflow's replay/determinism loop (:func:`chronicle.runtime.run`, unchanged),
+workflow's replay/determinism loop (:func:`chronicle.core.runtime.run`, unchanged),
 holds the live workflow coroutines, and brokers activity results back to them.
 Workers own only the activity code: they poll the Engine for a unit of work,
 run it, and report the outcome -- and the Engine resolves the parked workflow
@@ -9,7 +9,7 @@ coroutine that issued it.
 
 This module is the bridge between :func:`run` (unchanged) and the wire:
 
-* :class:`RemoteActivityExecutor` -- the :class:`~chronicle.runtime.ActivityExecutor`
+* :class:`RemoteActivityExecutor` -- the :class:`~chronicle.core.runtime.ActivityExecutor`
   that ``run`` drives. For each activity it mints a ``task_id``, parks on an
   :class:`asyncio.Future` keyed by that id, and enqueues the work.
   :meth:`Engine.ReportActivityResult` resolves that Future, resuming ``run``.
@@ -18,12 +18,12 @@ This module is the bridge between :func:`run` (unchanged) and the wire:
   ``ReportActivityResult`` resolves the parked Future.
 
 The marker that distinguishes "the activity ran and failed" from a setup error
-(:class:`chronicle.runtime._ActivityExecutionError`) is *reconstituted* on the
+(:class:`chronicle.core.runtime._ActivityExecutionError`) is *reconstituted* on the
 Engine side from the worker's failure report, so :func:`_execute` records exactly
 one ``Failed`` exactly as in-process -- the determinism + failure model is
 identical across the process boundary.
 
-The per-workflow event log is DURABLE (a :class:`~chronicle.history.SqliteEventLog`
+The per-workflow event log is DURABLE (a :class:`~chronicle.core.history.SqliteEventLog`
 over the engine's own aiosqlite connection): the live coroutine is a *cache* of
 replay state, and the recorded history is the source of truth. On a restart,
 :meth:`Engine.start` -> :meth:`Engine.recover` replays each workflow's history
@@ -46,18 +46,18 @@ from uuid import uuid4
 import aiosqlite
 import grpc.aio
 
-from .events import JsonValue
-from .history import SqliteEventLog
-from .proto import chronicle_pb2 as pb
-from .proto import chronicle_pb2_grpc as pb_grpc
-from .retry import idempotency_key
-from .runtime import (
+from chronicle.core.events import JsonValue
+from chronicle.core.history import SqliteEventLog
+from chronicle.core.retry import idempotency_key
+from chronicle.core.runtime import (
     ActivityFailedError,
     NonDeterminismError,
     _ActivityExecutionError,
     run,
 )
-from .task_queue import TaskQueue
+from chronicle.proto import chronicle_pb2 as pb
+from chronicle.proto import chronicle_pb2_grpc as pb_grpc
+from chronicle.server.task_queue import TaskQueue
 
 # A workflow is a coroutine-producing callable driven by run(); it returns a
 # JSON value. The Engine selects one by name from this registry on StartWorkflow.
@@ -65,10 +65,10 @@ WorkflowFn = Callable[..., Coroutine[Any, Any, JsonValue]]
 
 
 class RemoteActivityExecutor:
-    """An :class:`~chronicle.runtime.ActivityExecutor` that dispatches to a Worker.
+    """An :class:`~chronicle.core.runtime.ActivityExecutor` that dispatches to a Worker.
 
     This is the distribution half of the executor seam: ``run`` drives it exactly
-    as it drives :class:`~chronicle.runtime.LocalActivityExecutor`, but instead of
+    as it drives :class:`~chronicle.core.runtime.LocalActivityExecutor`, but instead of
     running the activity in-process it parks on an :class:`asyncio.Future` and
     lets a Worker do the work over the wire. Each call:
 
@@ -233,7 +233,7 @@ class Engine(pb_grpc.ChronicleServicer):
     ) -> None:
         """Drive ``run`` for ``workflow_id`` over its durable log.
 
-        Creates the per-workflow :class:`~chronicle.history.SqliteEventLog` (a
+        Creates the per-workflow :class:`~chronicle.core.history.SqliteEventLog` (a
         view of the shared event connection) and spawns ``run`` as the live
         coroutine. ``run`` replays whatever history is already on disk (nothing
         on a fresh start; a recorded prefix on recovery) and continues into new
@@ -271,9 +271,7 @@ class Engine(pb_grpc.ChronicleServicer):
         """
         workflow_id = request.workflow_id
         if not workflow_id:
-            await context.abort(
-                grpc.aio.StatusCode.INVALID_ARGUMENT, "workflow_id is required"
-            )
+            await context.abort(grpc.aio.StatusCode.INVALID_ARGUMENT, "workflow_id is required")
         if workflow_id in self._runs:
             await context.abort(
                 grpc.aio.StatusCode.ALREADY_EXISTS,
@@ -297,8 +295,7 @@ class Engine(pb_grpc.ChronicleServicer):
         # already JSON on the wire), so it round-trips exactly on recovery.
         async with self._lock:
             await self._conn.execute(
-                "INSERT INTO workflows (workflow_id, workflow_name, args_json)"
-                " VALUES (?, ?, ?)",
+                "INSERT INTO workflows (workflow_id, workflow_name, args_json) VALUES (?, ?, ?)",
                 (workflow_id, request.workflow_name, request.args_json),
             )
             await self._conn.commit()
@@ -334,9 +331,7 @@ class Engine(pb_grpc.ChronicleServicer):
             # value is unused: we re-check task.done() below instead.
             await asyncio.wait({task}, timeout=budget)
         if not task.done():
-            return pb.GetWorkflowResultResponse(
-                status=pb.GetWorkflowResultResponse.RUNNING
-            )
+            return pb.GetWorkflowResultResponse(status=pb.GetWorkflowResultResponse.RUNNING)
         try:
             result = task.result()
         except ActivityFailedError as exc:
@@ -439,9 +434,7 @@ class Engine(pb_grpc.ChronicleServicer):
         stays parked, waiting for whichever delivery eventually reports. A no-op
         if the task was already completed by another delivery.
         """
-        await self._queue.release(
-            request.task_id, retry_after=request.retry_after_seconds
-        )
+        await self._queue.release(request.task_id, retry_after=request.retry_after_seconds)
         return pb.ReleaseActivityTaskResponse()
 
     # --- Lifecycle -----------------------------------------------------------
