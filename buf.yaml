@@ -1,0 +1,47 @@
+# buf.yaml — Buf lint config for Chronicle's gRPC wire contract.
+#
+# See tools/gen_proto.py for the matching protoc codegen (-I src, rooted at src).
+# Buf is the linter for src/chronicle/proto/chronicle.proto. The proto is internal
+# and deliberately minimal (CLAUDE.md §1), so we take Buf's STANDARD ruleset —
+# the naming/structure/style rules — but disable five rules whose cost outweighs
+# their value here. Each exception is justified inline so this is a deliberate
+# decision, not laxness: Buf still enforces field/message/file naming, package
+# consistency, unique RPC request/response types, and Request/Response suffixes.
+version: v2
+modules:
+  - path: src
+lint:
+  use:
+    - STANDARD
+  except:
+    # --- Rules that assume a *public, versioned API* -------------------------
+    # chronicle.proto lives at chronicle/proto/, one segment below the package
+    # root `chronicle/`. That extra `proto/` is load-bearing: it is what lets the
+    # generated stubs import as `from chronicle.proto import chronicle_pb2` with
+    # no import rewriting (gen_proto.py). Buf wants path == package; we keep the
+    # layout and disable the rule.
+    - PACKAGE_DIRECTORY_MATCH
+    # `package chronicle` carries no `.v1` suffix. Versioning the package is for
+    # APIs published to a registry that will break-compatibly evolve; this is an
+    # internal contract, so the suffix would be ceremony, not signal.
+    - PACKAGE_VERSION_SUFFIX
+    # GetWorkflowResultResponse.Status uses RUNNING as the zero value rather than
+    # an _UNSPECIFIED sentinel. The engine always sets status explicitly, and
+    # renaming would mean regenerating stubs plus touching every
+    # pb.GetWorkflowResultResponse.{RUNNING,COMPLETED,FAILED} reference in
+    # client.py/engine.py — churn with no payoff for an internal proto.
+    - ENUM_ZERO_VALUE_SUFFIX
+    # --- Rules whose value here is outweighed by churn -----------------------
+    # ENUM_VALUE_PREFIX wants STATUS_RUNNING/STATUS_COMPLETED/STATUS_FAILED. The
+    # rule prevents name collisions across *multiple* sibling enums; Chronicle
+    # has a single enum, nested in one message (GetWorkflowResultResponse), so
+    # the prefix is redundant and the collision risk is zero. Following it would
+    # mean a regen + ~6 code refs. (This is a legitimate proto3 style rule, so
+    # revisit if more enums land and the prefix would actually disambiguate.)
+    - ENUM_VALUE_PREFIX
+    # SERVICE_SUFFIX wants `service ChronicleService`. This is Buf's house
+    # convention, not the proto3 style guide, and it would rename the generated
+    # classes to the redundant `ChronicleServiceServicer`/`ChronicleServiceStub`,
+    # touching engine.py's subclass + add_* call and client.py's stub. One
+    # internal service needs no disambiguation.
+    - SERVICE_SUFFIX
