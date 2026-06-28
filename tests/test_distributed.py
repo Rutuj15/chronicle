@@ -34,6 +34,7 @@ import grpc.aio
 
 from chronicle.client import Client, WorkflowStatus
 from chronicle.engine import Engine, WorkflowFn
+from chronicle.proto import chronicle_pb2 as pb
 from chronicle.proto import chronicle_pb2_grpc as pb_grpc
 from chronicle.runtime import (
     ActivityRegistry,
@@ -43,7 +44,7 @@ from chronicle.runtime import (
     RetryPolicy,
 )
 from chronicle.task_queue import SqliteTaskQueue
-from chronicle.worker import run_worker
+from chronicle.worker import _rpc, run_worker
 from conftest import noop_sleep
 
 # A factory a test calls to start a worker on the shared channel; returns the
@@ -67,6 +68,91 @@ class _MonotonicFake:
 
     def advance(self, dt: float) -> None:
         self.t += dt
+
+
+def _rpc_error(code: grpc.StatusCode, details: str = "engine down") -> grpc.aio.AioRpcError:
+    """Construct an ``AioRpcError`` -- the type ``_rpc`` / ``get_result`` catch.
+
+    grpcio ships no stubs, so this constructor is untyped; the metadata args are
+    required positionally but their values are immaterial -- the retry logic reads
+    only ``.code()``.
+    """
+    return grpc.aio.AioRpcError(  # type: ignore[abstract]
+        code, grpc.aio.Metadata(), grpc.aio.Metadata(), details
+    )
+
+
+class _FlakyStub:
+    """A stand-in ``ChronicleStub`` that injects transient UNAVAILABLE errors.
+
+    Drives ``run_worker`` / ``Client.get_result`` through a server blip without a
+    real server: ``PollActivityTask`` / ``ReportActivityResult`` /
+    ``GetWorkflowResult`` each fail their first ``fail`` calls with UNAVAILABLE,
+    then succeed. Every method yields once (``await asyncio.sleep(0)``) so a "no
+    work" poll or a tight retry loop cooperates with the test instead of starving
+    the event loop.
+    """
+
+    def __init__(
+        self,
+        *,
+        poll_fail: int = 0,
+        report_fail: int = 0,
+        observe_fail: int = 0,
+        observe_status: int = pb.GetWorkflowResultResponse.RUNNING,
+        observe_result: str = "null",
+    ) -> None:
+        self._poll_fail = poll_fail
+        self._report_fail = report_fail
+        self._observe_fail = observe_fail
+        self._observe_status = observe_status
+        self._observe_result = observe_result
+        self.poll_calls = 0
+        self.report_calls = 0
+        self.observe_calls = 0
+        self.reported: list[pb.ReportActivityResultRequest] = []
+        # The next task a successful poll hands out; None == "no work right now".
+        self.next_task: pb.ActivityTask | None = None
+
+    async def PollActivityTask(
+        self, request: pb.PollActivityTaskRequest
+    ) -> pb.PollActivityTaskResponse:
+        self.poll_calls += 1
+        await asyncio.sleep(0)
+        if self.poll_calls <= self._poll_fail:
+            raise _rpc_error(grpc.StatusCode.UNAVAILABLE)
+        if self.next_task is None:
+            return pb.PollActivityTaskResponse()
+        task, self.next_task = self.next_task, None
+        return pb.PollActivityTaskResponse(task=task)
+
+    async def ReportActivityResult(
+        self, request: pb.ReportActivityResultRequest
+    ) -> pb.ReportActivityResultResponse:
+        self.report_calls += 1
+        await asyncio.sleep(0)
+        if self.report_calls <= self._report_fail:
+            raise _rpc_error(grpc.StatusCode.UNAVAILABLE)
+        self.reported.append(request)
+        return pb.ReportActivityResultResponse()
+
+    async def ReleaseActivityTask(
+        self, request: pb.ReleaseActivityTaskRequest
+    ) -> pb.ReleaseActivityTaskResponse:
+        await asyncio.sleep(0)
+        return pb.ReleaseActivityTaskResponse()
+
+    async def GetWorkflowResult(
+        self, request: pb.GetWorkflowResultRequest, *, timeout: float | None = None
+    ) -> pb.GetWorkflowResultResponse:
+        del request, timeout  # the fake ignores the observe request + its deadline
+        self.observe_calls += 1
+        await asyncio.sleep(0)
+        if self.observe_calls <= self._observe_fail:
+            raise _rpc_error(grpc.StatusCode.UNAVAILABLE)
+        return pb.GetWorkflowResultResponse(
+            status=self._observe_status, result_json=self._observe_result
+        )
 
 
 @asynccontextmanager
@@ -405,3 +491,103 @@ async def test_running_returned_while_workflow_is_in_flight(tmp_path) -> None:
 
     assert done.status is WorkflowStatus.COMPLETED
     assert done.result == "done"
+
+
+# --- Engine-restart resilience (the worker/client half of crash recovery) -----
+#
+# While the Engine is restarting, every RPC surfaces UNAVAILABLE. The Worker and
+# the Client must ride through that blip (back off, retry) instead of dying or
+# raising -- otherwise bouncing the Engine would bounce every Worker and abort
+# every in-flight result poll. These pin that with a fake stub that injects
+# UNAVAILABLE, no real server needed.
+
+
+async def test_rpc_retries_unavailable_and_raises_real_errors() -> None:
+    # _rpc rides through transient UNAVAILABLE (backing off between tries) but
+    # lets a non-transient code propagate -- a NOT_FOUND is a bug, not a blip.
+    calls = 0
+    sleeps: list[float] = []
+
+    async def call() -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise _rpc_error(grpc.StatusCode.UNAVAILABLE)  # transient -> retry
+        if calls == 2:
+            raise _rpc_error(grpc.StatusCode.NOT_FOUND)  # real -> propagate
+        return "unreached"
+
+    async def sleep(d: float) -> None:
+        sleeps.append(d)
+
+    raised: grpc.aio.AioRpcError | None = None
+    try:
+        await _rpc(call, sleep=sleep, backoff=0.0)
+    except grpc.aio.AioRpcError as exc:
+        raised = exc
+
+    assert raised is not None
+    assert raised.code() == grpc.StatusCode.NOT_FOUND
+    assert calls == 2  # one transient retry, then the real error surfaced
+    assert sleeps == [0.0]  # one backoff before the second attempt
+
+
+async def test_worker_rides_through_transient_unavailable() -> None:
+    # Every poll surfaces UNAVAILABLE while the Engine restarts. The Worker backs
+    # off and retries instead of dying, so it survives the blip, then claims the
+    # task and reports it once the (fake) Engine is back.
+    stub = _FlakyStub(poll_fail=2)
+    stub.next_task = pb.ActivityTask(
+        task_id="t1",
+        workflow_id="wf",
+        activity_name="hi",
+        args_json='["x"]',
+        idempotency_key="wf:0",
+    )
+    seen: list[str] = []
+
+    async def hi(x: str) -> str:
+        seen.append(x)
+        return f"hi {x}"
+
+    worker = asyncio.create_task(
+        run_worker(stub, {"hi": hi}, sleep=noop_sleep, rpc_backoff=0.0)
+    )
+    try:
+        # Two UNAVAILABLE polls, then success: claim, run, report. Poll for the
+        # report rather than sleep a fixed beat (robust on a slow box).
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            if stub.reported:
+                break
+    finally:
+        worker.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await worker
+
+    assert stub.poll_calls >= 3  # 2 transient failures + the successful claim
+    assert seen == ["x"]
+    assert len(stub.reported) == 1
+    assert stub.reported[0].result_json == '"hi x"'
+
+
+async def test_get_result_rides_through_transient_unavailable() -> None:
+    # The result long-poll survives a transient UNAVAILABLE (Engine restarting):
+    # it backs off and re-polls within the budget, then returns COMPLETED once the
+    # (fake) Engine is back -- rather than surfacing the blip as an error.
+    stub = _FlakyStub(
+        observe_fail=1,
+        observe_status=pb.GetWorkflowResultResponse.COMPLETED,
+        observe_result='"ok"',
+    )
+    # Bypass the channel: get_result only touches self._stub, so drive the fake
+    # directly. (Constructing a real Client needs a real channel; not worth it to
+    # test the retry loop, which is all that matters here.)
+    client = Client.__new__(Client)
+    client._stub = stub  # type: ignore[attr-defined]
+
+    result = await client.get_result("wf", timeout=2.0, rpc_backoff=0.0)
+
+    assert result.status is WorkflowStatus.COMPLETED
+    assert result.result == "ok"
+    assert stub.observe_calls == 2  # one UNAVAILABLE, then one COMPLETED

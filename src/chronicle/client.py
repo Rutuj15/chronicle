@@ -10,7 +10,9 @@ result, and structured error fields. No proto type leaks into the SDK API.
 window elapses without a terminal state, and the Client re-calls until the
 workflow finishes (or its own budget runs out, in which case it returns the last
 ``RUNNING``). So a result may be ``COMPLETED``, ``FAILED``, or ``RUNNING`` (the
-last only if the caller's ``timeout`` elapsed mid-flight).
+last only if the caller's ``timeout`` elapsed mid-flight). The long-poll also
+absorbs a transient ``UNAVAILABLE`` (the Engine restarting) by backing off and
+re-polling -- the Client half of crash recovery, mirroring the Worker's.
 """
 
 import asyncio
@@ -86,6 +88,7 @@ class Client:
         workflow_id: str,
         *,
         timeout: float | None = None,
+        rpc_backoff: float = 0.5,
     ) -> WorkflowResult:
         """Long-poll ``workflow_id`` until it finishes, then return its outcome.
 
@@ -95,6 +98,19 @@ class Client:
         returned, so the caller may observe an in-flight workflow without raising).
         ``timeout`` caps the TOTAL wait across re-polls (``None`` = wait
         indefinitely); each gRPC call's deadline is the budget remaining.
+
+        Two transient gRPC outcomes are absorbed (re-polled within the budget)
+        rather than raised, so the long-poll survives an Engine restart:
+
+        * ``DEADLINE_EXCEEDED`` -- the observe call's own deadline elapsed, i.e.
+          the workflow is still running.
+        * ``UNAVAILABLE`` -- the Engine is transiently down (restarting, or a
+          network blip). ``rpc_backoff`` paces these retries so a down Engine is
+          not hammered; the long-poll resumes once it is back.
+
+        A result long-poll that died on a server restart would defeat the point
+        of durability: the workflow survives the crash, so observing it should
+        too. Any other gRPC code is a real error and propagates.
         """
         loop = asyncio.get_running_loop()
         deadline = None if timeout is None else loop.time() + timeout
@@ -110,12 +126,20 @@ class Client:
                     timeout=remaining,
                 )
             except grpc.aio.AioRpcError as exc:
-                # The observe call hit its gRPC deadline: the workflow is still
-                # running. Re-poll if budget remains, else (next iteration) return
-                # RUNNING. This absorbs the boundary race where the remaining
-                # budget slips under the server's long-poll window, so a tight
-                # client timeout surfaces RUNNING instead of an error.
-                if exc.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
+                code = exc.code()
+                if code == grpc.StatusCode.UNAVAILABLE:
+                    # The Engine is transiently down (e.g. restarting). Back off
+                    # and keep polling within the budget -- the workflow survives
+                    # the crash, so observing it should too.
+                    await asyncio.sleep(rpc_backoff)
+                    continue
+                if code == grpc.StatusCode.DEADLINE_EXCEEDED:
+                    # The observe call hit its gRPC deadline: the workflow is
+                    # still running. Re-poll if budget remains, else (next
+                    # iteration) return RUNNING. This absorbs the boundary race
+                    # where the remaining budget slips under the server's
+                    # long-poll window, so a tight client timeout surfaces RUNNING
+                    # instead of an error.
                     continue
                 raise
             result = _from_response(response)
