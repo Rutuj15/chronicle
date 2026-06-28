@@ -22,12 +22,13 @@ Each phase can also be driven directly::
 """
 
 import asyncio
-import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
+
+import aiosqlite
 
 from chronicle.context import WorkflowContext
 from chronicle.events import JsonValue
@@ -53,25 +54,26 @@ async def timed(ctx: WorkflowContext, duration: float) -> dict[str, JsonValue]:
     return {"started": started, "deadline": deadline, "finished": finished}
 
 
-def start(db_path: str) -> None:
+async def start(db_path: str) -> None:
     """Phase 1: record the start time + timer deadline, then sleep for real.
 
-    Uses the real OS clock and a real ``time.sleep``: a timer must actually
+    Uses the real OS clock and a real ``asyncio.sleep``: a timer must actually
     elapse wall-clock time on first run. The caller kills this process mid-sleep
     to simulate a worker crash; only the recorded events on disk survive it.
     """
-    conn = sqlite3.connect(db_path)
-    log = SqliteEventLog(conn, WORKFLOW_ID)
+    conn = await aiosqlite.connect(db_path)
+    log = SqliteEventLog(conn, WORKFLOW_ID, asyncio.Lock())
+    await log.start()
     print(f"  timer duration = {DURATION:.1f}s")
     print("  recording start time + deadline, then sleeping for real...")
     sys.stdout.flush()  # narration must land before the blocking sleep below
     # The default sleep is asyncio.sleep, so the worker truly waits the duration
     # (cooperatively) before the caller kills it mid-sleep.
-    asyncio.run(run(timed, (DURATION,), log, {}))
-    conn.close()
+    await run(timed, (DURATION,), log, {})
+    await conn.close()
 
 
-def resume(db_path: str) -> None:
+async def resume(db_path: str) -> None:
     """Phase 2: reopen the file cold and resume -- wait only the remainder.
 
     The real OS clock (``run``'s default ``now``) is essential here: the
@@ -84,10 +86,11 @@ def resume(db_path: str) -> None:
         print(f"  timer not due yet -- {remaining:.2f}s of the {DURATION:.1f}s left; waiting...")
         await asyncio.sleep(remaining)
 
-    conn = sqlite3.connect(db_path)
-    log = SqliteEventLog(conn, WORKFLOW_ID)
-    result = asyncio.run(run(timed, (DURATION,), log, {}, sleep=announce_sleep))
-    conn.close()
+    conn = await aiosqlite.connect(db_path)
+    log = SqliteEventLog(conn, WORKFLOW_ID, asyncio.Lock())
+    await log.start()
+    result = await run(timed, (DURATION,), log, {}, sleep=announce_sleep)
+    await conn.close()
 
     out: dict[str, JsonValue] = result
     started = float(out["started"])
@@ -103,17 +106,17 @@ def resume(db_path: str) -> None:
 def _kill_after(process: subprocess.Popen[bytes], delay: float) -> int:
     """Run ``process`` and SIGKILL it after ``delay`` seconds; return its exit code."""
     time.sleep(delay)
-    process.kill()  # SIGKILL: the in-flight time.sleep dies with the process
+    process.kill()  # SIGKILL: the in-flight asyncio.sleep dies with the process
     return process.wait()
 
 
 def main() -> int:
     args = sys.argv[1:]
     if len(args) == 2 and args[0] == "start":
-        start(args[1])
+        asyncio.run(start(args[1]))
         return 0
     if len(args) == 2 and args[0] == "resume":
-        resume(args[1])
+        asyncio.run(resume(args[1]))
         return 0
 
     # No subcommand: run the full two-process story in a throwaway database.

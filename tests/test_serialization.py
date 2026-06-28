@@ -154,9 +154,9 @@ def test_serialized_log_replays_with_no_activity_re_execution() -> None:
 
     # Simulate the durable store: every event leaves the process as bytes and
     # comes back as a reconstructed object.
-    rebuilt = InMemoryEventLog()
-    for i in range(len(original)):
-        rebuilt.append(load_event(dump_event(original[i])))
+    rebuilt = InMemoryEventLog(
+        load_event(dump_event(original[i])) for i in range(len(original))
+    )
 
     result = run_sync(two_step, ("world",), rebuilt, registry)
 

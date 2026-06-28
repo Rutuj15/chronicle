@@ -24,6 +24,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import aiosqlite
+
 from chronicle.context import WorkflowContext
 from chronicle.history import SqliteEventLog
 from chronicle.runtime import ActivityRegistry, ActivitySpec, run
@@ -64,22 +66,24 @@ async def checkout(ctx: WorkflowContext, amount: int) -> str:
     return await ctx.activity("charge", amount)
 
 
-def record(db_path: str, ledger: str) -> None:
+async def record(db_path: str, ledger: str) -> None:
     """Phase 1: run the workflow for real; the activity charges the ledger."""
-    conn = sqlite3.connect(db_path)
-    log = SqliteEventLog(conn, WORKFLOW_ID)
-    result = asyncio.run(run(checkout, (7,), log, _registry(ledger), workflow_id=WORKFLOW_ID))
+    conn = await aiosqlite.connect(db_path)
+    log = SqliteEventLog(conn, WORKFLOW_ID, asyncio.Lock())
+    await log.start()
+    result = await run(checkout, (7,), log, _registry(ledger), workflow_id=WORKFLOW_ID)
     print(f"  result           = {result!r}")
-    print(f"  events persisted = {len(log)}")
-    conn.close()
+    print(f"  events persisted = {len(await log.replay())}")
+    await conn.close()
 
 
-def resume(db_path: str, ledger: str) -> None:
+async def resume(db_path: str, ledger: str) -> None:
     """Phase 2: the charge event was lost, so it re-runs -- with the same key."""
-    conn = sqlite3.connect(db_path)
-    log = SqliteEventLog(conn, WORKFLOW_ID)
-    result = asyncio.run(run(checkout, (7,), log, _registry(ledger), workflow_id=WORKFLOW_ID))
-    conn.close()
+    conn = await aiosqlite.connect(db_path)
+    log = SqliteEventLog(conn, WORKFLOW_ID, asyncio.Lock())
+    await log.start()
+    result = await run(checkout, (7,), log, _registry(ledger), workflow_id=WORKFLOW_ID)
+    await conn.close()
 
     lconn = sqlite3.connect(ledger)
     n = lconn.execute("SELECT COUNT(*) FROM charges").fetchone()[0]
@@ -103,10 +107,10 @@ def _run_phase(phase: str, db_path: str, ledger: str) -> None:
 def main() -> int:
     args = sys.argv[1:]
     if len(args) == 3 and args[0] == "record":
-        record(args[1], args[2])
+        asyncio.run(record(args[1], args[2]))
         return 0
     if len(args) == 3 and args[0] == "resume":
-        resume(args[1], args[2])
+        asyncio.run(resume(args[1], args[2]))
         return 0
 
     # No subcommand: run the full two-process story in a throwaway directory.

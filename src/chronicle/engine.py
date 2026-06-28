@@ -23,11 +23,17 @@ Engine side from the worker's failure report, so :func:`_execute` records exactl
 one ``Failed`` exactly as in-process -- the determinism + failure model is
 identical across the process boundary.
 
-In 3b the per-workflow event log is in memory: the live coroutine IS the
-workflow's state. Engine-log durability + live-coroutine reconstruction on an
-engine crash is Week-6 work. The task queue is durable AND leased (3c): a taken
-task is hidden, not deleted, so a lost worker's lease expires and the task
-redelivers to another -- the foundation Week-6 worker crash recovery builds on.
+The per-workflow event log is DURABLE (a :class:`~chronicle.history.SqliteEventLog`
+over the engine's own aiosqlite connection): the live coroutine is a *cache* of
+replay state, and the recorded history is the source of truth. On a restart,
+:meth:`Engine.start` -> :meth:`Engine.recover` replays each workflow's history
+into a fresh live ``run`` coroutine, resuming exactly where it left off --
+Temporal's replay-on-restart insight, engine-owned. The task queue is durable
+AND leased (3c): a taken task is hidden, not deleted, so a lost worker's lease
+expires and the task redelivers to another; and an engine that crashes
+mid-activity simply re-issues the activity on recovery (the stale pre-crash task
+self-cleans). Both are at-least-once, which is what the engine-minted
+idempotency keys make safe.
 """
 
 import asyncio
@@ -37,10 +43,11 @@ from collections.abc import Callable, Coroutine, Mapping
 from typing import Any
 from uuid import uuid4
 
+import aiosqlite
 import grpc.aio
 
 from .events import JsonValue
-from .history import InMemoryEventLog
+from .history import SqliteEventLog
 from .proto import chronicle_pb2 as pb
 from .proto import chronicle_pb2_grpc as pb_grpc
 from .retry import idempotency_key
@@ -140,12 +147,20 @@ class Engine(pb_grpc.ChronicleServicer):
         self,
         workflows: Mapping[str, WorkflowFn],
         queue: TaskQueue,
+        event_conn: aiosqlite.Connection,
         *,
         poll_timeout: float = 5.0,
         result_timeout: float = 5.0,
     ) -> None:
         self._workflows = workflows
         self._queue = queue
+        # The engine's durable state -- each workflow's event log AND its
+        # identity (name + args) -- lives on this connection, so both survive an
+        # engine crash. The lock serializes multi-call sequences on it (the 3b
+        # aiosqlite lesson: a cursor open across an await + a concurrent commit
+        # fails with "SQL statements in progress").
+        self._conn = event_conn
+        self._lock = asyncio.Lock()
         # How long PollActivityTask blocks for work before returning empty (the
         # worker then re-polls). Long enough to be efficient, short enough that a
         # worker shutting down re-polls promptly.
@@ -158,9 +173,84 @@ class Engine(pb_grpc.ChronicleServicer):
         # RemoteActivityExecutor call; resolved by ReportActivityResult.
         self._pending: dict[str, asyncio.Future[JsonValue]] = {}
         self._executor = RemoteActivityExecutor(queue, self._pending)
-        # workflow_id -> the live run() task. The live coroutine is the
-        # workflow's state (in-memory in 3b).
+        # workflow_id -> the live run() task. The live coroutine is a CACHE of
+        # replay state; the durable event log is the source of truth, replayed
+        # back into a fresh coroutine by recover() on a restart.
         self._runs: dict[str, asyncio.Task[JsonValue]] = {}
+
+    async def start(self) -> None:
+        """Ensure the workflow-metadata table, then recover every known workflow.
+
+        Call once at startup, before serving. recover() replays each persisted
+        workflow's history into a fresh live coroutine, so an engine that crashed
+        mid-workflow resumes exactly where it left off. A no-op for a brand-new
+        engine (nothing persisted yet).
+        """
+        async with self._lock:
+            await self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS workflows ("
+                " workflow_id TEXT PRIMARY KEY,"
+                " workflow_name TEXT NOT NULL,"
+                " args_json TEXT NOT NULL"
+                ")"
+            )
+            await self._conn.commit()
+        await self.recover()
+
+    async def recover(self) -> None:
+        """Reconstruct every known workflow by replaying its durable history.
+
+        For each workflow the engine has a metadata row for, drive ``run`` over
+        its durable log: the recorded prefix replays (activities fed back from
+        history, never re-executed) and any in-flight step resumes into new
+        ground -- the same one loop, just over a non-empty log. A terminal
+        workflow replays to its end and finishes at once (pure replay: no side
+        effects, no re-execution). A workflow whose name is no longer registered,
+        or whose args fail to decode, cannot be reconstructed and is skipped
+        rather than aborting recovery.
+        """
+        async with self._lock:
+            cur = await self._conn.execute(
+                "SELECT workflow_id, workflow_name, args_json FROM workflows"
+            )
+            rows = await cur.fetchall()
+            await cur.close()
+        for workflow_id, workflow_name, args_json in rows:
+            workflow = self._workflows.get(workflow_name)
+            if workflow is None:
+                continue  # definition removed since the workflow was started: skip
+            try:
+                args = tuple(json.loads(args_json))
+            except (json.JSONDecodeError, TypeError):
+                continue  # corrupt metadata: skip rather than abort recovery
+            await self._spawn(workflow_id, workflow, args)
+
+    async def _spawn(
+        self,
+        workflow_id: str,
+        workflow: WorkflowFn,
+        args: tuple[JsonValue, ...],
+    ) -> None:
+        """Drive ``run`` for ``workflow_id`` over its durable log.
+
+        Creates the per-workflow :class:`~chronicle.history.SqliteEventLog` (a
+        view of the shared event connection) and spawns ``run`` as the live
+        coroutine. ``run`` replays whatever history is already on disk (nothing
+        on a fresh start; a recorded prefix on recovery) and continues into new
+        ground.
+        """
+        log = SqliteEventLog(self._conn, workflow_id, self._lock)
+        await log.start()
+        self._runs[workflow_id] = asyncio.create_task(
+            run(
+                workflow,
+                args,
+                log,
+                executor=self._executor,
+                workflow_id=workflow_id,
+            ),
+            name=f"chronicle-workflow:{workflow_id}",
+        )
 
     # --- Client -> Engine ----------------------------------------------------
 
@@ -174,7 +264,10 @@ class Engine(pb_grpc.ChronicleServicer):
         The Client later calls ``GetWorkflowResult`` to observe the outcome, so
         this returns immediately -- the workflow keeps running in the Engine
         after the RPC completes. A duplicate ``workflow_id`` or an unknown
-        ``workflow_name`` aborts.
+        ``workflow_name`` aborts. The workflow's identity (name + args) is
+        persisted durably BEFORE its run starts, so a crash at any point after
+        still lets ``recover()`` know the workflow existed and replay whatever
+        history reached disk.
         """
         workflow_id = request.workflow_id
         if not workflow_id:
@@ -199,16 +292,17 @@ class Engine(pb_grpc.ChronicleServicer):
                 grpc.aio.StatusCode.INVALID_ARGUMENT,
                 f"args_json is not valid JSON: {exc}",
             )
-        self._runs[workflow_id] = asyncio.create_task(
-            run(
-                workflow,
-                args,
-                InMemoryEventLog(),
-                executor=self._executor,
-                workflow_id=workflow_id,
-            ),
-            name=f"chronicle-workflow:{workflow_id}",
-        )
+        # Persist identity durably before spawning: this row is what recover()
+        # reads to know the workflow existed. args_json is stored verbatim (it is
+        # already JSON on the wire), so it round-trips exactly on recovery.
+        async with self._lock:
+            await self._conn.execute(
+                "INSERT INTO workflows (workflow_id, workflow_name, args_json)"
+                " VALUES (?, ?, ?)",
+                (workflow_id, request.workflow_name, request.args_json),
+            )
+            await self._conn.commit()
+        await self._spawn(workflow_id, workflow, args)
         return pb.StartWorkflowResponse()
 
     async def GetWorkflowResult(

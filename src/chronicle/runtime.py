@@ -13,9 +13,12 @@ workflow coroutine and simultaneously handles three modes:
 Same loop, three modes -- which branch is taken depends only on whether the
 cursor ``i`` is still inside the recorded history.
 
-The append-only log this replays over is the ``EventLog`` seam, defined in
-``history.py``; ``run`` is indifferent to whether that log is in memory or on
-disk -- which is what lets SQLite swap in without touching this loop.
+The append-only log this replays over is the ``EventLog`` seam (async: one
+``replay`` batch-read plus a per-event ``append``), defined in ``history.py``.
+``run`` loads the recorded history once and drives over that local cursor, so it
+is indifferent to whether the store is in memory or on disk -- which is what
+lets SQLite swap in without touching this loop, and lets a durable store fsync
+off the event loop rather than blocking it.
 """
 
 import asyncio
@@ -487,6 +490,12 @@ async def run[R](
         executor = LocalActivityExecutor(_normalize_registry(registry), sleep=sleep)
     ctx = WorkflowContext()
     coro = workflow(ctx, *args)
+    # Load the recorded history once: an async batch read for a durable store, a
+    # copy of the list for the in-memory one. The loop drives over this local
+    # cursor -- a command seen before (i < len(history)) is fed its recorded
+    # result; new ground is executed, durably appended, and appended here too so
+    # the cursor stays in lockstep with the store for the iterations that follow.
+    history = await log.replay()
     value_to_send: JsonValue | None = None
     i = 0
     while True:
@@ -495,14 +504,14 @@ async def run[R](
         except StopIteration as done:
             # Guard the other direction too: a workflow that returns *fewer*
             # commands than were recorded has diverged from the recorded run.
-            if i < len(log):
+            if i < len(history):
                 raise NonDeterminismError(
                     "non-deterministic workflow: finished after "
-                    f"{i} command(s) but {len(log)} were recorded"
+                    f"{i} command(s) but {len(history)} were recorded"
                 ) from None
             return cast(R, done.value)
-        if i < len(log):
-            event = log[i]  # REPLAY: seen this command before
+        if i < len(history):
+            event = history[i]  # REPLAY: seen this command before
             _assert_matches(command, event)
         else:
             event = await _execute(
@@ -512,7 +521,8 @@ async def run[R](
                 workflow_id=workflow_id,
                 seq=i,
             )  # NEW GROUND: execute & record
-            log.append(event)
+            await log.append(event)  # durably persist (one fsync) before proceeding
+            history.append(event)  # advance the cursor to match the store
         value_to_send = await _resolve(event, now=now, sleep=sleep)  # may wait on a timer
         i += 1
 

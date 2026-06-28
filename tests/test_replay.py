@@ -92,8 +92,9 @@ def test_resume_replays_prefix_then_executes() -> None:
     full = InMemoryEventLog()
     run_sync(two_step, ("world",), full, registry)  # record the complete history
 
-    prefix = InMemoryEventLog()
-    prefix.append(full[0])  # simulate a crash after only 'greet' was recorded
+    # Simulate a crash after only 'greet' was recorded: a fresh log seeded with
+    # just the first event.
+    prefix = InMemoryEventLog([full[0]])
     calls["greet"] = calls["shout"] = 0
 
     resumed = run_sync(two_step, ("world",), prefix, registry)

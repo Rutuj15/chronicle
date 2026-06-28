@@ -84,10 +84,16 @@ async def recover_workflow(ctx: object, amount: int) -> str:
 
 async def run_engine(addr: str, db_path: str) -> None:
     """Serve the Engine (workflow registry + leased task queue) on `addr`."""
-    conn = await aiosqlite.connect(db_path)
-    queue = SqliteTaskQueue(conn, lease_seconds=LEASE_SECONDS)
+    queue_conn = await aiosqlite.connect(db_path)
+    queue = SqliteTaskQueue(queue_conn, lease_seconds=LEASE_SECONDS)
     await queue.start()
-    engine = Engine({"recover": recover_workflow}, queue, poll_timeout=POLL_TIMEOUT)
+    # The engine's durable state (event log + workflow metadata) in a sibling
+    # file; reopened on restart, a fresh engine recovers in-flight workflows.
+    event_conn = await aiosqlite.connect(db_path + ".events")
+    engine = Engine(
+        {"recover": recover_workflow}, queue, event_conn, poll_timeout=POLL_TIMEOUT
+    )
+    await engine.start()  # recover workflows in flight when the engine last died
     server = grpc.aio.server()
     pb_grpc.add_ChronicleServicer_to_server(engine, server)
     server.add_insecure_port(addr)

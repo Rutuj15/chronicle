@@ -89,12 +89,17 @@ async def _server(
     a lease instantly). Tears the stack down on exit (every started worker,
     engine, server, channel, queue connection).
     """
-    conn = await aiosqlite.connect(db_path)
-    queue = SqliteTaskQueue(conn, lease_seconds=lease_seconds, now=now)
+    queue_conn = await aiosqlite.connect(db_path)
+    queue = SqliteTaskQueue(queue_conn, lease_seconds=lease_seconds, now=now)
     await queue.start()
+    # The engine's durable state (event log + workflow metadata) lives in a
+    # sibling file, separate from the task queue's store -- two stores, two
+    # connections. Reopened on the same path, a fresh engine recovers from it.
+    event_conn = await aiosqlite.connect(db_path + ".events")
     engine = Engine(
-        workflows, queue, poll_timeout=poll_timeout, result_timeout=result_timeout
+        workflows, queue, event_conn, poll_timeout=poll_timeout, result_timeout=result_timeout
     )
+    await engine.start()  # ensure the metadata table + recover any known workflows
 
     server = grpc.aio.server()
     pb_grpc.add_ChronicleServicer_to_server(engine, server)
@@ -127,7 +132,8 @@ async def _server(
         await engine.stop()
         await server.stop(grace=None)
         await channel.close()
-        await conn.close()
+        await event_conn.close()
+        await queue_conn.close()
 
 
 @asynccontextmanager

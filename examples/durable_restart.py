@@ -19,11 +19,12 @@ driven directly::
 """
 
 import asyncio
-import sqlite3
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+import aiosqlite
 
 from chronicle.context import WorkflowContext
 from chronicle.history import SqliteEventLog
@@ -57,28 +58,30 @@ async def two_step(ctx: WorkflowContext, name: str) -> str:
     return f"{greeting} >>> {shouted}"
 
 
-def record(db_path: str) -> None:
+async def record(db_path: str) -> None:
     """Phase 1: run the workflow for real, persisting every event to disk."""
     executions: dict[str, int] = {"greet": 0, "shout": 0}
-    conn = sqlite3.connect(db_path)
-    log = SqliteEventLog(conn, WORKFLOW_ID)
-    result = asyncio.run(run(two_step, ("world",), log, _registry(executions)))
-    n_events = len(log)
-    conn.close()
+    conn = await aiosqlite.connect(db_path)
+    log = SqliteEventLog(conn, WORKFLOW_ID, asyncio.Lock())
+    await log.start()
+    result = await run(two_step, ("world",), log, _registry(executions))
+    n_events = len(await log.replay())
+    await conn.close()
 
     print(f"  result           = {result!r}")
     print(f"  activities ran   = {executions}   (both executed)")
     print(f"  events persisted = {n_events}")
 
 
-def replay(db_path: str) -> None:
+async def replay(db_path: str) -> None:
     """Phase 2: cold-open the same file and replay -- no activity re-runs."""
     executions: dict[str, int] = {"greet": 0, "shout": 0}
-    conn = sqlite3.connect(db_path)
-    log = SqliteEventLog(conn, WORKFLOW_ID)
-    result = asyncio.run(run(two_step, ("world",), log, _registry(executions)))
-    n_events = len(log)
-    conn.close()
+    conn = await aiosqlite.connect(db_path)
+    log = SqliteEventLog(conn, WORKFLOW_ID, asyncio.Lock())
+    await log.start()
+    result = await run(two_step, ("world",), log, _registry(executions))
+    n_events = len(await log.replay())
+    await conn.close()
 
     print(f"  result           = {result!r}")
     print(f"  activities ran   = {executions}   (NONE re-ran)")
@@ -100,10 +103,10 @@ def _run_phase(phase: str, db_path: str) -> None:
 def main() -> int:
     args = sys.argv[1:]
     if len(args) == 2 and args[0] == "record":
-        record(args[1])
+        asyncio.run(record(args[1]))
         return 0
     if len(args) == 2 and args[0] == "replay":
-        replay(args[1])
+        asyncio.run(replay(args[1]))
         return 0
 
     # No subcommand: run the full two-process story in a throwaway database.
